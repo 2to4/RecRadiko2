@@ -129,3 +129,46 @@ Temporary Items
 
 # Test results
 *.xcresult
+
+# Build artifacts that appear in RecRadiko2 project
+AppColors.o
+AppFonts.o
+
+# Cache directories
+**/Cache/
+**/Caches/
+
+# Temporary and backup files
+*~.nib
+*.swp
+*.bak
+*.orig
+
+# macOS specific files
+.DS_Store?
+ehthumbs.db
+Thumbs.db
+
+# Xcode project specific
+*.xcuserstate
+*.xcuserdatad
+project.xcworkspace/xcuserdata/
+
+# Development environment files
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Documentation build artifacts
+docs/.build/
+docs/dist/
+
+# Coverage reports
+coverage/
+*.gcov
+*.lcov
+
+# Profiling data
+*.prof

@@ -141,7 +141,7 @@ struct ProgramListView: View {
                     .font(.appCaption)
                     .foregroundColor(.appSecondaryText)
                 
-                Text("\(program.displayTime)～\(TimeConverter.convertTo25HourFormat(program.endTime))")
+                Text("\(program.displayTime)～\(TimeConverter.formatProgramTime(program.endTime))")
                     .font(.appBody)
                     .foregroundColor(.appPrimaryText)
                 

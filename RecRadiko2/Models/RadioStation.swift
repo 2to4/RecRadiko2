@@ -14,13 +14,17 @@ struct RadioStation: Identifiable, Hashable, Codable {
     let displayName: String // 表示名 (例: "TBS")
     let logoURL: String?    // ロゴ画像URL
     let areaId: String      // 所属地域ID (例: "JP13")
+    let bannerURL: String?  // バナー画像URL
+    let href: String?       // 放送局WebサイトURL
     
-    init(id: String, name: String, displayName: String, logoURL: String? = nil, areaId: String) {
+    init(id: String, name: String, displayName: String, logoURL: String? = nil, areaId: String, bannerURL: String? = nil, href: String? = nil) {
         self.id = id
         self.name = name
         self.displayName = displayName
         self.logoURL = logoURL
         self.areaId = areaId
+        self.bannerURL = bannerURL
+        self.href = href
     }
 }
 

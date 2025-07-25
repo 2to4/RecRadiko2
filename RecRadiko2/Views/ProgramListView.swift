@@ -233,7 +233,7 @@ struct ProgramListView: View {
             )
             .labelsHidden()
             .datePickerStyle(CompactDatePickerStyle())
-            .onChange(of: viewModel.selectedDate) { newDate in
+            .onChange(of: viewModel.selectedDate) { _, newDate in
                 viewModel.selectDate(newDate)
             }
             

@@ -3,7 +3,11 @@
 
 **作成日**: 2025年7月24日  
 **最終更新**: 2025年7月24日  
-**バージョン**: 1.1 (ナビゲーション設計変更反映)  
+**バージョン**: 1.2 (SwiftUI onChange API新仕様対応)  
+**更新履歴**: 
+- v1.0: 初版作成
+- v1.1: ナビゲーション設計変更反映 (macOS互換性問題解決)
+- v1.2: SwiftUI onChange API新仕様対応 (macOS 14.0+)  
 **対象フェーズ**: Phase 1 - 基盤構築・UI実装  
 **期間**: 2週間（事前設計2日 + 実装12日）
 
@@ -953,7 +957,7 @@ struct AdaptiveLayout: View {
                 .onAppear {
                     windowSize = geometry.size
                 }
-                .onChange(of: geometry.size) { newSize in
+                .onChange(of: geometry.size) { oldSize, newSize in
                     windowSize = newSize
                 }
         }

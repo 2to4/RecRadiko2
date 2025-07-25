@@ -116,24 +116,17 @@ final class RecordingViewModel: BaseViewModel {
         guard isRecording else { return }
         
         Task {
-            do {
-                await recordingService.cancelRecording()
+            await recordingService.cancelRecording()
+            
+            await MainActor.run {
+                stopProgressTimer()
+                resetRecordingState()
                 
-                await MainActor.run {
-                    stopProgressTimer()
-                    resetRecordingState()
-                    
-                    // 録音キャンセル通知
-                    NotificationCenter.default.post(
-                        name: .recordingCancelled,
-                        object: nil
-                    )
-                }
-                
-            } catch {
-                await MainActor.run {
-                    showError("録音の停止中にエラーが発生しました: \(error.localizedDescription)")
-                }
+                // 録音キャンセル通知
+                NotificationCenter.default.post(
+                    name: .recordingCancelled,
+                    object: nil
+                )
             }
         }
     }

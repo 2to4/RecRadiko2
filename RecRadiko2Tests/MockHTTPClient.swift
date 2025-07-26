@@ -22,8 +22,10 @@ class MockHTTPClient: HTTPClientProtocol {
     private var auth2Response: String?
     private var stationListResponse: Data?
     private var programListResponse: Data?
-    private var shouldThrowError = false
-    private var errorToThrow: Error = HTTPError.networkError(NSError(domain: "Test", code: -1))
+    var shouldThrowError = false
+    var errorToThrow: Error = HTTPError.networkError(NSError(domain: "Test", code: -1))
+    var dataToReturn: Data?
+    var requestHandler: ((URL, HTTPMethod, [String: String]?, Data?) throws -> Data)?
     
     // MARK: - Setup Methods
     
@@ -107,6 +109,16 @@ class MockHTTPClient: HTTPClientProtocol {
         
         if shouldThrowError {
             throw errorToThrow
+        }
+        
+        // カスタムハンドラーが設定されている場合はそれを使用
+        if let handler = requestHandler {
+            return try handler(endpoint, method, headers, body)
+        }
+        
+        // デフォルトのdataToReturnが設定されている場合はそれを返す
+        if let data = dataToReturn {
+            return data
         }
         
         let urlString = endpoint.absoluteString

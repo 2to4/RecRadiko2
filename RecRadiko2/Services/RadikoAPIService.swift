@@ -144,8 +144,8 @@ class RadikoAPIService {
     /// - Returns: 認証情報
     private func ensureAuthenticated() async throws -> AuthInfo {
         let authSvc = try await getOrCreateAuthService()
-        if await authSvc.isAuthenticated() {
-            return await authSvc.currentAuthInfo!
+        if authSvc.isAuthenticated() {
+            return authSvc.currentAuthInfo!
         } else {
             return try await authSvc.authenticate()
         }

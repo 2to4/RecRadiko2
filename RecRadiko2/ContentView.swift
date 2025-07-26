@@ -13,6 +13,7 @@ struct ContentView: View {
     // MARK: - State
     @State private var selectedTab: CustomTabBar.TabItem = .stationList
     @StateObject private var navigationManager = NavigationManager()
+    @StateObject private var recordingManager = RecordingManager()
     
     // MARK: - Body
     var body: some View {
@@ -34,7 +35,7 @@ struct ContentView: View {
             selectedTab = .stationList
         }
         .sheet(isPresented: $navigationManager.showingRecordingProgress) {
-            RecordingProgressView()
+            RecordingProgressView(recordingManager: recordingManager)
                 .environmentObject(navigationManager)
         }
     }
@@ -52,19 +53,14 @@ struct ContentView: View {
                 ))
             
         case .program:
-            if navigationManager.selectedStation != nil {
-                ProgramListView()
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .trailing),
-                        removal: .move(edge: .leading)
-                    ))
-            } else {
-                // 放送局が選択されていない場合は放送局一覧に戻る
-                StationListView()
-                    .onAppear {
-                        selectedTab = .stationList
-                    }
-            }
+            ProgramScheduleView(
+                recordingManager: recordingManager,
+                selectedStation: $navigationManager.selectedStation
+            )
+                .transition(.asymmetric(
+                    insertion: .move(edge: .trailing),
+                    removal: .move(edge: .leading)
+                ))
             
         case .settings:
             SettingsView()

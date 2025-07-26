@@ -27,24 +27,51 @@ protocol AuthServiceProtocol {
 }
 
 /// Radiko認証サービス実装
-@MainActor
 class RadikoAuthService: AuthServiceProtocol {
     // MARK: - Properties
     private let httpClient: HTTPClientProtocol
+    private let userDefaults: UserDefaultsProtocol
     private let appKey = "bcd151073c03b352e1ef2fd66c32209da9ca0afa"
     
-    @Published private(set) var currentAuthInfo: AuthInfo?
+    private var _currentAuthInfo: AuthInfo?
+    
+    /// スレッドセーフな認証情報プロパティ
+    var currentAuthInfo: AuthInfo? {
+        get {
+            ensureInitialized()
+            return initializationQueue.sync {
+                return _currentAuthInfo
+            }
+        }
+    }
+    
+    // MARK: - Properties
+    private var isInitialized = false
+    private let initializationQueue = DispatchQueue(label: "RadikoAuthService.initialization", attributes: .concurrent)
     
     // MARK: - Initializer
-    init(httpClient: HTTPClientProtocol = HTTPClient()) {
+    init(httpClient: HTTPClientProtocol = HTTPClient(), 
+         userDefaults: UserDefaultsProtocol = UserDefaults.standard) {
         self.httpClient = httpClient
-        loadCachedAuth()
+        self.userDefaults = userDefaults
+        // 遅延初期化：最初のアクセス時にキャッシュを読み込む
+    }
+    
+    /// 遅延初期化の実行（スレッドセーフ）
+    private func ensureInitialized() {
+        initializationQueue.sync(flags: .barrier) {
+            guard !isInitialized else { return }
+            isInitialized = true
+            loadCachedAuth()
+        }
     }
     
     // MARK: - AuthServiceProtocol Implementation
     func authenticate() async throws -> AuthInfo {
+        ensureInitialized()
+        
         // 有効なキャッシュがある場合はそれを使用
-        if let cached = currentAuthInfo, cached.isValid {
+        if let cached = initializationQueue.sync(execute: { _currentAuthInfo }), cached.isValid {
             return cached
         }
         
@@ -74,21 +101,29 @@ class RadikoAuthService: AuthServiceProtocol {
             throw RadikoError.authenticationFailed
         }
         
-        // キャッシュ保存
-        currentAuthInfo = authInfo
+        // キャッシュ保存（スレッドセーフ）
+        initializationQueue.sync(flags: .barrier) {
+            _currentAuthInfo = authInfo
+        }
         saveCachedAuth(authInfo)
         
         return authInfo
     }
     
     func refreshAuth() async throws -> AuthInfo {
-        currentAuthInfo = nil
+        ensureInitialized()
+        initializationQueue.sync(flags: .barrier) {
+            _currentAuthInfo = nil
+        }
         clearCachedAuth()
         return try await authenticate()
     }
     
     func isAuthenticated() -> Bool {
-        return currentAuthInfo?.isValid ?? false
+        ensureInitialized()
+        return initializationQueue.sync {
+            return _currentAuthInfo?.isValid ?? false
+        }
     }
     
     // MARK: - Private Methods
@@ -106,23 +141,18 @@ class RadikoAuthService: AuthServiceProtocol {
             "X-Radiko-Device": "pc"
         ]
         
-        // HTTPレスポンスを直接取得
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        headers.forEach { key, value in
-            request.setValue(value, forHTTPHeaderField: key)
-        }
-        
-        let (_, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw HTTPError.networkError(NSError(domain: "Invalid response", code: 0))
-        }
+        // HTTPClientを使用してレスポンスヘッダーを取得
+        let (_, responseHeaders) = try await httpClient.requestWithHeaders(
+            url,
+            method: .post,
+            headers: headers,
+            body: nil
+        )
         
         // レスポンスヘッダーから情報抽出
-        guard let authToken = httpResponse.value(forHTTPHeaderField: "X-Radiko-AuthToken"),
-              let keyOffsetStr = httpResponse.value(forHTTPHeaderField: "X-Radiko-KeyOffset"),
-              let keyLengthStr = httpResponse.value(forHTTPHeaderField: "X-Radiko-KeyLength"),
+        guard let authToken = responseHeaders["X-Radiko-AuthToken"],
+              let keyOffsetStr = responseHeaders["X-Radiko-KeyOffset"],
+              let keyLengthStr = responseHeaders["X-Radiko-KeyLength"],
               let keyOffset = Int(keyOffsetStr),
               let keyLength = Int(keyLengthStr) else {
             throw RadikoError.invalidResponse
@@ -209,7 +239,7 @@ class RadikoAuthService: AuthServiceProtocol {
     
     /// キャッシュから認証情報を読み込み
     private func loadCachedAuth() {
-        guard let data = UserDefaults.standard.data(forKey: "RadikoAuthInfo") else {
+        guard let data = userDefaults.data(forKey: "RadikoAuthInfo") else {
             return
         }
         
@@ -218,9 +248,9 @@ class RadikoAuthService: AuthServiceProtocol {
             decoder.dateDecodingStrategy = .iso8601
             let authInfo = try decoder.decode(AuthInfo.self, from: data)
             
-            // 有効な認証情報のみロード
+            // 有効な認証情報のみロード（スレッドセーフ）
             if authInfo.isValid {
-                currentAuthInfo = authInfo
+                _currentAuthInfo = authInfo
             } else {
                 clearCachedAuth()
             }
@@ -235,7 +265,7 @@ class RadikoAuthService: AuthServiceProtocol {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             let data = try encoder.encode(authInfo)
-            UserDefaults.standard.set(data, forKey: "RadikoAuthInfo")
+            userDefaults.set(data, forKey: "RadikoAuthInfo")
         } catch {
             // エンコードエラーは無視（ログ出力など後で追加可能）
         }
@@ -243,7 +273,18 @@ class RadikoAuthService: AuthServiceProtocol {
     
     /// キャッシュされた認証情報をクリア
     private func clearCachedAuth() {
-        UserDefaults.standard.removeObject(forKey: "RadikoAuthInfo")
+        userDefaults.removeObject(forKey: "RadikoAuthInfo")
+    }
+    
+    // MARK: - Test Support
+    
+    /// テスト専用：完全な状態リセット（スレッドセーフ）
+    func resetForTesting() {
+        initializationQueue.sync(flags: .barrier) {
+            isInitialized = false
+            _currentAuthInfo = nil
+            clearCachedAuth()
+        }
     }
 }
 
@@ -261,20 +302,23 @@ private struct Auth1Response {
 extension RadikoAuthService {
     /// 認証状態の詳細情報を取得
     var authStatus: AuthStatus {
-        guard let authInfo = currentAuthInfo else {
-            return .notAuthenticated
-        }
-        
-        let validationResult = authInfo.validate()
-        switch validationResult {
-        case .valid:
-            return .authenticated(authInfo)
-        case .warning(let reason):
-            return .warning(authInfo, reason: reason)
-        case .expired:
-            return .expired(authInfo)
-        case .invalid(let reason):
-            return .invalid(authInfo, reason: reason)
+        ensureInitialized()
+        return initializationQueue.sync {
+            guard let authInfo = _currentAuthInfo else {
+                return .notAuthenticated
+            }
+            
+            let validationResult = authInfo.validate()
+            switch validationResult {
+            case .valid:
+                return .authenticated(authInfo)
+            case .warning(let reason):
+                return .warning(authInfo, reason: reason)
+            case .expired:
+                return .expired(authInfo)
+            case .invalid(let reason):
+                return .invalid(authInfo, reason: reason)
+            }
         }
     }
     

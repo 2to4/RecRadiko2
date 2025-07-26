@@ -40,8 +40,7 @@ class MockHTTPClient: HTTPClientProtocol {
     }
     
     func setupAuth2AreaRestricted() {
-        shouldThrowError = true
-        errorToThrow = RadikoError.areaRestricted
+        auth2Response = "," // カンマだけの無効なレスポンス（エリア制限）
     }
     
     func setupCompleteFlow() {
@@ -114,7 +113,9 @@ class MockHTTPClient: HTTPClientProtocol {
         
         switch true {
         case urlString.contains("auth1"):
-            return try handleAuth1Request(headers: headers)
+            // auth1はrequestWithHeadersで呼び出されるべき
+            // requestDataから呼ばれた場合は空データを返す
+            return Data()
             
         case urlString.contains("auth2"):
             return try handleAuth2Request(headers: headers)
@@ -272,6 +273,38 @@ extension MockHTTPClient {
         }
         return text
     }
+    
+    func requestWithHeaders(_ endpoint: URL,
+                           method: HTTPMethod = .get,
+                           headers: [String: String]? = nil,
+                           body: Data? = nil) async throws -> (data: Data, headers: [String: String]) {
+        requestCount += 1
+        
+        if shouldThrowError {
+            throw errorToThrow
+        }
+        
+        // auth1リクエストの場合、適切なヘッダーを返す
+        if endpoint.absoluteString.contains("auth1") {
+            auth1RequestCount += 1
+            
+            guard let auth1Response = auth1Response else {
+                throw HTTPError.serverError
+            }
+            
+            let responseHeaders = [
+                "X-Radiko-AuthToken": auth1Response.authToken,
+                "X-Radiko-KeyOffset": String(auth1Response.keyOffset),
+                "X-Radiko-KeyLength": String(auth1Response.keyLength)
+            ]
+            
+            return (data: Data(), headers: responseHeaders)
+        }
+        
+        // その他のリクエストの場合、通常のrequestDataを呼び出す
+        let data = try await requestData(endpoint, method: method, headers: headers, body: body)
+        return (data: data, headers: [:])
+    }
 }
 
 // MARK: - Timeout Mock Client
@@ -307,6 +340,14 @@ class TimeoutMockHTTPClient: HTTPClientProtocol {
         try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         throw HTTPError.networkError(NSError(domain: "Timeout", code: -1001))
     }
+    
+    func requestWithHeaders(_ endpoint: URL,
+                           method: HTTPMethod,
+                           headers: [String: String]?,
+                           body: Data?) async throws -> (data: Data, headers: [String: String]) {
+        try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        throw HTTPError.networkError(NSError(domain: "Timeout", code: -1001))
+    }
 }
 
 // MARK: - Server Error Mock Client
@@ -337,6 +378,13 @@ class ServerErrorMockHTTPClient: HTTPClientProtocol {
                      method: HTTPMethod,
                      headers: [String: String]?,
                      body: Data?) async throws -> String {
+        throw HTTPError.httpError(statusCode: statusCode)
+    }
+    
+    func requestWithHeaders(_ endpoint: URL,
+                           method: HTTPMethod,
+                           headers: [String: String]?,
+                           body: Data?) async throws -> (data: Data, headers: [String: String]) {
         throw HTTPError.httpError(statusCode: statusCode)
     }
 }

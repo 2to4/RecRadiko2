@@ -9,20 +9,41 @@ import Testing
 import Foundation
 @testable import RecRadiko2
 
-@Suite("RadikoAuthService Tests")
+// テスト環境での@MainActor除去のため、個別メソッドから@MainActorを削除
+
+@Suite("RadikoAuthService Tests", .serialized)
 struct RadikoAuthServiceTests {
+    
+    // MARK: - Test Utilities
+    
+    /// テスト専用AuthService作成
+    private func createTestAuthService() -> (RadikoAuthService, MockHTTPClient, TestUserDefaults) {
+        let mockHTTPClient = MockHTTPClient()
+        let testUserDefaults = TestUserDefaults()
+        let authService = RadikoAuthService(
+            httpClient: mockHTTPClient,
+            userDefaults: testUserDefaults
+        )
+        return (authService, mockHTTPClient, testUserDefaults)
+    }
+    
+    /// 完全なクリーンアップ処理
+    private func cleanup(authService: RadikoAuthService, mockClient: MockHTTPClient, userDefaults: TestUserDefaults) {
+        authService.resetForTesting()
+        mockClient.reset()
+        userDefaults.clear()
+    }
     
     // MARK: - 認証成功テスト
     
     @Test("認証成功 - auth1からauth2までの完全なフロー")
-    @MainActor
     func authenticateSuccess() async throws {
         // Given
-        let mockHTTPClient = MockHTTPClient()
+        let (authService, mockHTTPClient, testUserDefaults) = createTestAuthService()
+        defer { cleanup(authService: authService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
+        
         mockHTTPClient.setupAuth1Success()
         mockHTTPClient.setupAuth2Success()
-        
-        let authService = RadikoAuthService(httpClient: mockHTTPClient)
         
         // When
         let authInfo = try await authService.authenticate()
@@ -38,11 +59,10 @@ struct RadikoAuthServiceTests {
     }
     
     @Test("キャッシュされた認証情報の使用")
-    @MainActor
     func useCachedAuthInfo() async throws {
         // Given
-        let mockHTTPClient = MockHTTPClient()
-        let authService = RadikoAuthService(httpClient: mockHTTPClient)
+        let (firstAuthService, mockHTTPClient, testUserDefaults) = createTestAuthService()
+        defer { cleanup(authService: firstAuthService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
         
         // 有効な認証情報を事前に設定
         let cachedAuth = AuthInfo.create(
@@ -51,14 +71,17 @@ struct RadikoAuthServiceTests {
             areaName: "東京都"
         )
         
-        // UserDefaultsに直接保存（実際のキャッシュをシミュレート）
+        // TestUserDefaultsに保存（実際のキャッシュをシミュレート）
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(cachedAuth)
-        UserDefaults.standard.set(data, forKey: "RadikoAuthInfo")
+        testUserDefaults.set(data, forKey: "RadikoAuthInfo")
         
         // 新しいインスタンスを作成（キャッシュ読み込みをテスト）
-        let newAuthService = RadikoAuthService(httpClient: mockHTTPClient)
+        let newAuthService = RadikoAuthService(
+            httpClient: mockHTTPClient,
+            userDefaults: testUserDefaults
+        )
         
         // When
         let authInfo = try await newAuthService.authenticate()
@@ -66,20 +89,16 @@ struct RadikoAuthServiceTests {
         // Then
         #expect(authInfo.authToken == "cached_token")
         #expect(mockHTTPClient.requestCount == 0) // HTTP呼び出しなし
-        
-        // クリーンアップ
-        UserDefaults.standard.removeObject(forKey: "RadikoAuthInfo")
     }
     
     @Test("期限切れキャッシュの再認証")
-    @MainActor
     func expiredCacheReauthentication() async throws {
         // Given
-        let mockHTTPClient = MockHTTPClient()
+        let (authService, mockHTTPClient, testUserDefaults) = createTestAuthService()
+        defer { cleanup(authService: authService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
+        
         mockHTTPClient.setupAuth1Success()
         mockHTTPClient.setupAuth2Success()
-        
-        let authService = RadikoAuthService(httpClient: mockHTTPClient)
         
         // 期限切れの認証情報をキャッシュに保存
         let expiredAuth = AuthInfo(
@@ -92,10 +111,10 @@ struct RadikoAuthServiceTests {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(expiredAuth)
-        UserDefaults.standard.set(data, forKey: "RadikoAuthInfo")
+        testUserDefaults.set(data, forKey: "RadikoAuthInfo")
         
         // 新しいインスタンスを作成
-        let newAuthService = RadikoAuthService(httpClient: mockHTTPClient)
+        let newAuthService = RadikoAuthService(httpClient: mockHTTPClient, userDefaults: testUserDefaults)
         
         // When
         let authInfo = try await newAuthService.authenticate()
@@ -104,18 +123,15 @@ struct RadikoAuthServiceTests {
         #expect(authInfo.authToken != "expired_token")
         #expect(authInfo.isValid == true)
         #expect(mockHTTPClient.requestCount > 0) // 新しいHTTP呼び出しあり
-        
-        // クリーンアップ
-        UserDefaults.standard.removeObject(forKey: "RadikoAuthInfo")
     }
     
     // MARK: - パーシャルキー抽出テスト
     
     @Test("パーシャルキーの正確な抽出")
-    @MainActor
     func extractPartialKeyCorrectly() {
         // Given
-        let authService = RadikoAuthService()
+        let (authService, mockHTTPClient, testUserDefaults) = createTestAuthService()
+        defer { cleanup(authService: authService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
         
         // テスト用のBase64エンコードされた認証トークン
         let testData = "abcdefghijklmnopqrstuvwxyz0123456789"
@@ -143,10 +159,11 @@ struct RadikoAuthServiceTests {
     }
     
     @Test("パーシャルキー抽出の境界値テスト")
-    @MainActor
     func extractPartialKeyBoundaryValues() {
         // Given
-        let authService = RadikoAuthService()
+        let (authService, mockHTTPClient, testUserDefaults) = createTestAuthService()
+        defer { cleanup(authService: authService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
+        
         let testToken = Data("test_token_data".utf8).base64EncodedString()
         
         // When & Then
@@ -169,13 +186,12 @@ struct RadikoAuthServiceTests {
     // MARK: - エラーハンドリングテスト
     
     @Test("auth1通信失敗時のエラーハンドリング")
-    @MainActor
     func auth1NetworkError() async throws {
         // Given
-        let mockHTTPClient = MockHTTPClient()
-        mockHTTPClient.setupNetworkError()
+        let (authService, mockHTTPClient, testUserDefaults) = createTestAuthService()
+        defer { cleanup(authService: authService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
         
-        let authService = RadikoAuthService(httpClient: mockHTTPClient)
+        mockHTTPClient.setupNetworkError()
         
         // When & Then
         await #expect(throws: RadikoError.authenticationFailed) {
@@ -186,15 +202,14 @@ struct RadikoAuthServiceTests {
     }
     
     @Test("auth2通信失敗時のエラーハンドリング")
-    @MainActor
     func auth2NetworkError() async throws {
         // Given
-        let mockHTTPClient = MockHTTPClient()
+        let (authService, mockHTTPClient, testUserDefaults) = createTestAuthService()
+        defer { cleanup(authService: authService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
+        
         mockHTTPClient.setupAuth1Success()
         // auth2は失敗させる
         mockHTTPClient.setupNetworkError()
-        
-        let authService = RadikoAuthService(httpClient: mockHTTPClient)
         
         // When & Then
         await #expect(throws: RadikoError.authenticationFailed) {
@@ -203,14 +218,13 @@ struct RadikoAuthServiceTests {
     }
     
     @Test("地域制限エラーの処理")
-    @MainActor
     func areaRestrictedError() async throws {
         // Given
-        let mockHTTPClient = MockHTTPClient()
+        let (authService, mockHTTPClient, testUserDefaults) = createTestAuthService()
+        defer { cleanup(authService: authService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
+        
         mockHTTPClient.setupAuth1Success()
         mockHTTPClient.setupAuth2AreaRestricted()
-        
-        let authService = RadikoAuthService(httpClient: mockHTTPClient)
         
         // When & Then
         await #expect(throws: RadikoError.areaRestricted) {
@@ -221,14 +235,13 @@ struct RadikoAuthServiceTests {
     // MARK: - 認証更新テスト
     
     @Test("認証更新機能")
-    @MainActor
     func refreshAuthentication() async throws {
         // Given
-        let mockHTTPClient = MockHTTPClient()
+        let (authService, mockHTTPClient, testUserDefaults) = createTestAuthService()
+        defer { cleanup(authService: authService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
+        
         mockHTTPClient.setupAuth1Success()
         mockHTTPClient.setupAuth2Success()
-        
-        let authService = RadikoAuthService(httpClient: mockHTTPClient)
         
         // 初回認証
         let firstAuth = try await authService.authenticate()
@@ -248,14 +261,13 @@ struct RadikoAuthServiceTests {
     // MARK: - 認証状態管理テスト
     
     @Test("認証状態の確認")
-    @MainActor
     func authenticationStatusCheck() async throws {
         // Given
-        let mockHTTPClient = MockHTTPClient()
+        let (authService, mockHTTPClient, testUserDefaults) = createTestAuthService()
+        defer { cleanup(authService: authService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
+        
         mockHTTPClient.setupAuth1Success()
         mockHTTPClient.setupAuth2Success()
-        
-        let authService = RadikoAuthService(httpClient: mockHTTPClient)
         
         // 初期状態（未認証）
         #expect(authService.isAuthenticated() == false)
@@ -271,14 +283,13 @@ struct RadikoAuthServiceTests {
     }
     
     @Test("認証ステータスの詳細情報")
-    @MainActor
     func detailedAuthStatus() async throws {
         // Given
-        let mockHTTPClient = MockHTTPClient()
+        let (authService, mockHTTPClient, testUserDefaults) = createTestAuthService()
+        defer { cleanup(authService: authService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
+        
         mockHTTPClient.setupAuth1Success()
         mockHTTPClient.setupAuth2Success()
-        
-        let authService = RadikoAuthService(httpClient: mockHTTPClient)
         
         // 未認証状態
         var status = authService.authStatus
@@ -303,11 +314,10 @@ struct RadikoAuthServiceTests {
     }
     
     @Test("期限切れ認証の詳細ステータス")
-    @MainActor
     func expiredAuthDetailedStatus() async throws {
         // Given
-        let mockHTTPClient = MockHTTPClient()
-        let authService = RadikoAuthService(httpClient: mockHTTPClient)
+        let (authService, mockHTTPClient, testUserDefaults) = createTestAuthService()
+        defer { cleanup(authService: authService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
         
         // 期限切れの認証情報を直接設定
         let expiredAuth = AuthInfo(
@@ -317,15 +327,14 @@ struct RadikoAuthServiceTests {
             expiresAt: Date().addingTimeInterval(-3600)
         )
         
-        // プライベートプロパティに直接アクセスできないため、
-        // UserDefaultsを通じて設定
+        // TestUserDefaultsを通じて設定
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(expiredAuth)
-        UserDefaults.standard.set(data, forKey: "RadikoAuthInfo")
+        testUserDefaults.set(data, forKey: "RadikoAuthInfo")
         
         // 新しいインスタンスで期限切れキャッシュを読み込み
-        let newAuthService = RadikoAuthService(httpClient: mockHTTPClient)
+        let newAuthService = RadikoAuthService(httpClient: mockHTTPClient, userDefaults: testUserDefaults)
         
         // When
         let status = newAuthService.authStatus
@@ -334,32 +343,28 @@ struct RadikoAuthServiceTests {
         #expect(status.isUsable == false)
         if case .notAuthenticated = status {
             // 期限切れキャッシュは自動的にクリアされるため未認証状態になる
-            #expect(true)
+            #expect(Bool(true))
         } else {
             #expect(Bool(false), "Expected notAuthenticated status for expired cache")
         }
-        
-        // クリーンアップ
-        UserDefaults.standard.removeObject(forKey: "RadikoAuthInfo")
     }
     
     // MARK: - キャッシュ管理テスト
     
     @Test("キャッシュの保存と読み込み")
-    @MainActor
     func cacheManagement() async throws {
         // Given
-        let mockHTTPClient = MockHTTPClient()
+        let (authService, mockHTTPClient, testUserDefaults) = createTestAuthService()
+        defer { cleanup(authService: authService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
+        
         mockHTTPClient.setupAuth1Success()
         mockHTTPClient.setupAuth2Success()
-        
-        let authService = RadikoAuthService(httpClient: mockHTTPClient)
         
         // When - 認証実行（キャッシュに保存される）
         let authInfo = try await authService.authenticate()
         
         // 新しいインスタンスでキャッシュ読み込みを確認
-        let newAuthService = RadikoAuthService(httpClient: mockHTTPClient)
+        let newAuthService = RadikoAuthService(httpClient: mockHTTPClient, userDefaults: testUserDefaults)
         
         // Then
         #expect(newAuthService.currentAuthInfo?.authToken == authInfo.authToken)
@@ -367,28 +372,24 @@ struct RadikoAuthServiceTests {
         
         // キャッシュクリア後の確認
         mockHTTPClient.reset()
-        let refreshedAuth = try await newAuthService.refreshAuth()
+        _ = try await newAuthService.refreshAuth()
         
         // refreshAuthはキャッシュをクリアしてから再認証する
         #expect(mockHTTPClient.requestCount > 0)
-        
-        // クリーンアップ
-        UserDefaults.standard.removeObject(forKey: "RadikoAuthInfo")
     }
     
     @Test("破損したキャッシュの処理")
-    @MainActor
     func corruptedCacheHandling() async throws {
         // Given
-        let mockHTTPClient = MockHTTPClient()
+        let (authService, mockHTTPClient, testUserDefaults) = createTestAuthService()
+        defer { cleanup(authService: authService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
+        
         mockHTTPClient.setupAuth1Success()
         mockHTTPClient.setupAuth2Success()
         
         // 破損したキャッシュデータを設定
         let corruptedData = "{ invalid json }".data(using: .utf8)!
-        UserDefaults.standard.set(corruptedData, forKey: "RadikoAuthInfo")
-        
-        let authService = RadikoAuthService(httpClient: mockHTTPClient)
+        testUserDefaults.set(corruptedData, forKey: "RadikoAuthInfo")
         
         // When - 破損したキャッシュでも正常に認証できることを確認
         let authInfo = try await authService.authenticate()
@@ -396,22 +397,18 @@ struct RadikoAuthServiceTests {
         // Then
         #expect(authInfo.isValid == true)
         #expect(authService.isAuthenticated() == true)
-        
-        // クリーンアップ
-        UserDefaults.standard.removeObject(forKey: "RadikoAuthInfo")
     }
     
     // MARK: - 並行性テスト
     
     @Test("並行認証リクエストの処理")
-    @MainActor
     func concurrentAuthenticationRequests() async throws {
         // Given
-        let mockHTTPClient = MockHTTPClient()
+        let (authService, mockHTTPClient, testUserDefaults) = createTestAuthService()
+        defer { cleanup(authService: authService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
+        
         mockHTTPClient.setupAuth1Success()
         mockHTTPClient.setupAuth2Success()
-        
-        let authService = RadikoAuthService(httpClient: mockHTTPClient)
         
         // When - 同時に複数の認証リクエストを実行
         async let auth1 = authService.authenticate()
@@ -428,12 +425,5 @@ struct RadikoAuthServiceTests {
         // キャッシュが正しく機能していることを確認
         // 最初の認証以降はキャッシュから取得されるため、リクエスト数は最小限
         #expect(mockHTTPClient.requestCount >= 2) // auth1 + auth2の最小回数
-    }
-    
-    // MARK: - テストのクリーンアップ
-    
-    func tearDown() {
-        // 各テスト後にキャッシュをクリア
-        UserDefaults.standard.removeObject(forKey: "RadikoAuthInfo")
     }
 }

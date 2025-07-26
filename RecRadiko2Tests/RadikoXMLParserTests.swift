@@ -433,7 +433,7 @@ struct RadikoXMLParserTests {
         #expect(result.isValid == true)
         #expect(result.message == nil)
         if case .success = result {
-            #expect(true)
+            #expect(Bool(true))
         } else {
             #expect(Bool(false), "Expected success result")
         }
@@ -495,7 +495,7 @@ struct RadikoXMLParserTests {
         // Then
         #expect(result.isValid == true)
         if case .success = result {
-            #expect(true)
+            #expect(Bool(true))
         } else {
             #expect(Bool(false), "Expected success result")
         }

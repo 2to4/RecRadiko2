@@ -44,6 +44,18 @@ protocol HTTPClientProtocol {
                      method: HTTPMethod,
                      headers: [String: String]?,
                      body: Data?) async throws -> String
+    
+    /// ヘッダー情報を含むレスポンスの取得
+    /// - Parameters:
+    ///   - endpoint: リクエストURL
+    ///   - method: HTTPメソッド
+    ///   - headers: HTTPヘッダー
+    ///   - body: リクエストボディ
+    /// - Returns: レスポンスデータとヘッダー
+    func requestWithHeaders(_ endpoint: URL,
+                           method: HTTPMethod,
+                           headers: [String: String]?,
+                           body: Data?) async throws -> (data: Data, headers: [String: String])
 }
 
 /// HTTPメソッド定義
@@ -174,6 +186,68 @@ class HTTPClient: HTTPClientProtocol {
             throw HTTPError.decodingError
         }
         return text
+    }
+    
+    func requestWithHeaders(_ endpoint: URL,
+                           method: HTTPMethod = .get,
+                           headers: [String: String]? = nil,
+                           body: Data? = nil) async throws -> (data: Data, headers: [String: String]) {
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = method.rawValue
+        request.timeoutInterval = timeout
+        
+        // デフォルトヘッダー設定
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("RecRadiko2/1.0", forHTTPHeaderField: "User-Agent")
+        
+        // カスタムヘッダー設定
+        headers?.forEach { key, value in
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        
+        // リクエストボディ設定
+        if let body = body {
+            request.httpBody = body
+        }
+        
+        // リクエスト実行
+        let (data, response) = try await session.data(for: request)
+        
+        // レスポンス処理
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw HTTPError.networkError(NSError(domain: "Invalid response", code: 0))
+        }
+        
+        // ステータスコードチェック
+        try validateStatusCode(httpResponse.statusCode)
+        
+        // ヘッダー情報を辞書に変換
+        var responseHeaders: [String: String] = [:]
+        httpResponse.allHeaderFields.forEach { key, value in
+            if let keyString = key as? String, let valueString = value as? String {
+                responseHeaders[keyString] = valueString
+            }
+        }
+        
+        return (data: data, headers: responseHeaders)
+    }
+    
+    // MARK: - Private Methods
+    
+    /// HTTPステータスコードの検証
+    /// - Parameter statusCode: HTTPステータスコード
+    /// - Throws: HTTPError（エラーステータスの場合）
+    private func validateStatusCode(_ statusCode: Int) throws {
+        switch statusCode {
+        case 200...299:
+            return // 成功
+        case 401:
+            throw HTTPError.unauthorized
+        case 500...599:
+            throw HTTPError.serverError
+        default:
+            throw HTTPError.httpError(statusCode: statusCode)
+        }
     }
 }
 

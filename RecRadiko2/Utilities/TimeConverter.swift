@@ -33,7 +33,24 @@ struct TimeConverter {
     /// - Parameter timeString: Radiko形式の時刻文字列
     /// - Returns: 変換されたDate（失敗時はnil）
     static func parseRadikoTime(_ timeString: String) -> Date? {
-        return radikoDateFormatter.date(from: timeString)
+        // 基本的な形式チェック
+        guard timeString.count == 14,
+              timeString.allSatisfy({ $0.isNumber }) else {
+            return nil
+        }
+        
+        // DateFormatterで解析
+        guard let date = radikoDateFormatter.date(from: timeString) else {
+            return nil
+        }
+        
+        // 解析結果が元の文字列と一致することを確認（無効な日付の自動修正を防ぐ）
+        let formattedBack = radikoDateFormatter.string(from: date)
+        guard formattedBack == timeString else {
+            return nil
+        }
+        
+        return date
     }
     
     /// DateをRadiko時刻文字列に変換

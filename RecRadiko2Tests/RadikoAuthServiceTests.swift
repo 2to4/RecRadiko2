@@ -49,9 +49,10 @@ struct RadikoAuthServiceTests {
         let authInfo = try await authService.authenticate()
         
         // Then
-        #expect(authInfo.authToken.isEmpty == false)
-        #expect(authInfo.areaId == "JP13")
-        #expect(authInfo.areaName == "東京都")
+        let expectedToken = "test_auth_token_1234567890abcdef_padding_data".data(using: .utf8)!.base64EncodedString()
+        #expect(authInfo.authToken == expectedToken)
+        #expect(authInfo.areaId == "JP14")
+        #expect(authInfo.areaName == "神奈川県")
         #expect(authInfo.isValid == true)
         #expect(authService.currentAuthInfo != nil)
         #expect(mockHTTPClient.auth1RequestCount == 1)
@@ -67,8 +68,8 @@ struct RadikoAuthServiceTests {
         // 有効な認証情報を事前に設定
         let cachedAuth = AuthInfo.create(
             authToken: "cached_token",
-            areaId: "JP13",
-            areaName: "東京都"
+            areaId: "JP14",
+            areaName: "神奈川県"
         )
         
         // TestUserDefaultsに保存（実際のキャッシュをシミュレート）
@@ -103,8 +104,8 @@ struct RadikoAuthServiceTests {
         // 期限切れの認証情報をキャッシュに保存
         let expiredAuth = AuthInfo(
             authToken: "expired_token",
-            areaId: "JP13",
-            areaName: "東京都",
+            areaId: "JP14",
+            areaName: "神奈川県",
             expiresAt: Date().addingTimeInterval(-3600) // 1時間前
         )
         
@@ -223,10 +224,17 @@ struct RadikoAuthServiceTests {
         let (authService, mockHTTPClient, testUserDefaults) = createTestAuthService()
         defer { cleanup(authService: authService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
         
+        // クリーンアップを確実に実行
+        authService.resetForTesting()
+        mockHTTPClient.reset()
+        testUserDefaults.clear()
+        
         mockHTTPClient.setupAuth1Success()
         mockHTTPClient.setupAuth2AreaRestricted()
         
-        // When & Then
+        print("DEBUG: Swift Testing - テスト開始")
+        
+        // When & Then: エリア制限エラーが発生することを確認
         await #expect(throws: RadikoError.areaRestricted) {
             try await authService.authenticate()
         }
@@ -252,7 +260,8 @@ struct RadikoAuthServiceTests {
         let refreshedAuth = try await authService.refreshAuth()
         
         // Then
-        #expect(refreshedAuth.authToken == firstToken) // モックでは同じトークンが返される
+        let expectedToken = "test_auth_token_1234567890abcdef_padding_data".data(using: .utf8)!.base64EncodedString()
+        #expect(refreshedAuth.authToken == expectedToken) // モックでは同じトークンが返される
         #expect(refreshedAuth.isValid == true)
         #expect(mockHTTPClient.requestCount > 0) // 新しいリクエストが発生
         #expect(authService.currentAuthInfo?.authToken == refreshedAuth.authToken)
@@ -322,8 +331,8 @@ struct RadikoAuthServiceTests {
         // 期限切れの認証情報を直接設定
         let expiredAuth = AuthInfo(
             authToken: "expired_token",
-            areaId: "JP13",
-            areaName: "東京都",
+            areaId: "JP14",
+            areaName: "神奈川県",
             expiresAt: Date().addingTimeInterval(-3600)
         )
         
@@ -372,6 +381,8 @@ struct RadikoAuthServiceTests {
         
         // キャッシュクリア後の確認
         mockHTTPClient.reset()
+        mockHTTPClient.setupAuth1Success()
+        mockHTTPClient.setupAuth2Success()
         _ = try await newAuthService.refreshAuth()
         
         // refreshAuthはキャッシュをクリアしてから再認証する
@@ -423,7 +434,8 @@ struct RadikoAuthServiceTests {
         #expect(results.allSatisfy { $0.isValid })
         
         // キャッシュが正しく機能していることを確認
-        // 最初の認証以降はキャッシュから取得されるため、リクエスト数は最小限
-        #expect(mockHTTPClient.requestCount >= 2) // auth1 + auth2の最小回数
+        // 並行処理では最初の1つだけが実際の認証を行い、他はキャッシュを使用
+        #expect(mockHTTPClient.auth1RequestCount == 1)
+        #expect(mockHTTPClient.auth2RequestCount == 1)
     }
 }

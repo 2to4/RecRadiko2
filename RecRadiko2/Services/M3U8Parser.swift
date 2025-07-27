@@ -157,10 +157,17 @@ class M3U8Parser {
         if urlString.hasPrefix("/") {
             var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
             components?.path = urlString
+            components?.query = nil
+            components?.fragment = nil
             return components?.url?.absoluteString ?? urlString
         }
         
-        // 相対パスの場合
+        // 相対パスの場合（../ などを含む）
+        if let url = URL(string: urlString, relativeTo: baseURL) {
+            return url.absoluteString
+        }
+        
+        // フォールバック
         let resolvedURL = baseURL.deletingLastPathComponent().appendingPathComponent(urlString)
         return resolvedURL.absoluteString
     }

@@ -37,12 +37,19 @@ class RadikoAuthServiceXCTests: XCTestCase {
     
     /// XCTest版: エリア制限エラーテスト
     func testAreaRestrictedError() async throws {
-        // Given: エリア制限設定
+        // Given: クリーンな状態から開始
+        authService.resetForTesting()
+        mockHTTPClient.reset()
+        testUserDefaults.clear()
+        
+        // エリア制限設定
         mockHTTPClient.setupAuth1Success()
         mockHTTPClient.setupAuth2AreaRestricted()
         
-        print("DEBUG: テスト開始 - auth1レスポンス設定済み")
-        print("DEBUG: auth2エリア制限設定済み")
+        // MockHTTPClientの設定確認
+        // MockHTTPClient設定確認（privateプロパティのため直接アクセス不可）
+        
+        print("DEBUG: テスト開始 - MockHTTPClient設定完了")
         
         // When & Then: エリア制限エラーが発生することを確認
         do {

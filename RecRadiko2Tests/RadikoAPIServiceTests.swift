@@ -23,19 +23,21 @@ struct RadikoAPIServiceTests {
     // MARK: - Test Properties
     
     /// テスト用サービス作成
-    func createTestService() -> (RadikoAPIService, MockHTTPClient, TestUserDefaults) {
+    func createTestService() -> (RadikoAPIService, MockHTTPClient, TestUserDefaults, RadikoAuthService) {
         let mockHTTPClient = MockHTTPClient()
         let testUserDefaults = TestUserDefaults()
+        let authService = RadikoAuthService(httpClient: mockHTTPClient, userDefaults: testUserDefaults)
         let apiService = RadikoAPIService(
             httpClient: mockHTTPClient,
-            authService: nil,
+            authService: authService,
             userDefaults: testUserDefaults
         )
-        return (apiService, mockHTTPClient, testUserDefaults)
+        return (apiService, mockHTTPClient, testUserDefaults, authService)
     }
     
     /// 完全なクリーンアップ処理
-    private func cleanup(apiService: RadikoAPIService, mockClient: MockHTTPClient, userDefaults: TestUserDefaults) {
+    private func cleanup(apiService: RadikoAPIService, mockClient: MockHTTPClient, userDefaults: TestUserDefaults, authService: RadikoAuthService) {
+        authService.resetForTesting()
         mockClient.reset()
         userDefaults.clear()
     }
@@ -46,8 +48,8 @@ struct RadikoAPIServiceTests {
     @Test("番組表XML取得の成功パターン")
     func testFetchProgramScheduleSuccess() async throws {
         // Given: テストサービスとモックHTTPクライアント
-        let (apiService, mockHTTPClient, testUserDefaults) = createTestService()
-        defer { cleanup(apiService: apiService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
+        let (apiService, mockHTTPClient, testUserDefaults, authService) = createTestService()
+        defer { cleanup(apiService: apiService, mockClient: mockHTTPClient, userDefaults: testUserDefaults, authService: authService) }
         
         // モックレスポンス設定：認証とプログラムリストの両方を設定
         mockHTTPClient.setupCompleteFlow()
@@ -70,8 +72,8 @@ struct RadikoAPIServiceTests {
     @Test("番組表XMLパース処理の正常系")
     func testParseProgramScheduleXMLSuccess() async throws {
         // Given: テストサービスとモックHTTPクライアント
-        let (apiService, mockHTTPClient, testUserDefaults) = createTestService()
-        defer { cleanup(apiService: apiService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
+        let (apiService, mockHTTPClient, testUserDefaults, authService) = createTestService()
+        defer { cleanup(apiService: apiService, mockClient: mockHTTPClient, userDefaults: testUserDefaults, authService: authService) }
         
         // モックレスポンス設定
         mockHTTPClient.setupCompleteFlow()
@@ -94,8 +96,8 @@ struct RadikoAPIServiceTests {
     @Test("ネットワークエラー時の処理")
     func testNetworkErrorHandling() async throws {
         // Given: テストサービスとエラーを発生させるモック
-        let (apiService, mockHTTPClient, testUserDefaults) = createTestService()
-        defer { cleanup(apiService: apiService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
+        let (apiService, mockHTTPClient, testUserDefaults, authService) = createTestService()
+        defer { cleanup(apiService: apiService, mockClient: mockHTTPClient, userDefaults: testUserDefaults, authService: authService) }
         
         // ネットワークエラー設定
         mockHTTPClient.setupNetworkError()
@@ -105,13 +107,17 @@ struct RadikoAPIServiceTests {
             let today = Date()
             _ = try await apiService.fetchPrograms(stationId: "TBS", date: today)
             #expect(Bool(false), "エラーが発生すべきでした")
-        } catch {
-            // RadikoError.networkErrorが投げられることを確認
-            if case RadikoError.networkError = error {
+        } catch let error as RadikoError {
+            // ネットワークエラーまたは認証失敗エラーを許容
+            switch error {
+            case .networkError, .authenticationFailed:
                 // 期待通り
-            } else {
-                #expect(Bool(false), "RadikoError.networkError以外のエラーが発生しました: \(error)")
+                break
+            default:
+                #expect(Bool(false), "予期しないエラーが発生しました: \(error)")
             }
+        } catch {
+            #expect(Bool(false), "RadikoError以外のエラーが発生しました: \(error)")
         }
     }
     
@@ -119,8 +125,8 @@ struct RadikoAPIServiceTests {
     @Test("放送局リスト取得の成功パターン")
     func testFetchStationsSuccess() async throws {
         // Given: テストサービスとモックHTTPクライアント
-        let (apiService, mockHTTPClient, testUserDefaults) = createTestService()
-        defer { cleanup(apiService: apiService, mockClient: mockHTTPClient, userDefaults: testUserDefaults) }
+        let (apiService, mockHTTPClient, testUserDefaults, authService) = createTestService()
+        defer { cleanup(apiService: apiService, mockClient: mockHTTPClient, userDefaults: testUserDefaults, authService: authService) }
         
         // モックレスポンス設定
         mockHTTPClient.setupCompleteFlow()

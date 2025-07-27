@@ -30,8 +30,8 @@ class BasicIntegrationTests: XCTestCase {
         
         let simpleStationXML = """
         <?xml version="1.0" encoding="UTF-8"?>
-        <stations area_id="JP13">
-            <station id="TEST" area_id="JP13">
+        <stations area_id="JP14">
+            <station id="TEST" area_id="JP14">
                 <name>テスト放送局</name>
                 <ascii_name>TEST STATION</ascii_name>
             </station>
@@ -46,7 +46,7 @@ class BasicIntegrationTests: XCTestCase {
         XCTAssertEqual(stations.count, 1)
         XCTAssertEqual(stations[0].id, "TEST")
         XCTAssertEqual(stations[0].name, "テスト放送局")
-        XCTAssertEqual(stations[0].areaId, "JP13")
+        XCTAssertEqual(stations[0].areaId, "JP14")
     }
     
     /// TimeConverterの基本機能テスト
@@ -77,14 +77,14 @@ class BasicIntegrationTests: XCTestCase {
         // Given: AuthInfo作成
         let authInfo = AuthInfo.create(
             authToken: "test_token_12345",
-            areaId: "JP13",
-            areaName: "東京都"
+            areaId: "JP14",
+            areaName: "神奈川県"
         )
         
         // Then: 作成が成功し、期待通りの値が設定されていること
         XCTAssertEqual(authInfo.authToken, "test_token_12345")
-        XCTAssertEqual(authInfo.areaId, "JP13")
-        XCTAssertEqual(authInfo.areaName, "東京都")
+        XCTAssertEqual(authInfo.areaId, "JP14")
+        XCTAssertEqual(authInfo.areaName, "神奈川県")
         XCTAssertTrue(authInfo.isValid)
         
         // 有効期限の確認
@@ -103,9 +103,9 @@ class BasicIntegrationTests: XCTestCase {
                 <station id="TBS">
                     <name>TBSラジオ</name>
                     <progs>
-                        <prog id="20250726220000" ft="20250726220000" to="20250727000000" dur="7200">
+                        <prog id="20250726220000" ft="20250726220000" to="20250727000000" station_id="TBS" ts="1">
                             <title>テスト番組</title>
-                            <desc>テスト番組の説明</desc>
+                            <info>テスト番組の説明</info>
                             <pfm>テストパーソナリティ</pfm>
                         </prog>
                     </progs>

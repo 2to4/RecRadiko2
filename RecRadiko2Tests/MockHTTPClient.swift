@@ -27,22 +27,30 @@ class MockHTTPClient: HTTPClientProtocol {
     var dataToReturn: Data?
     var requestHandler: ((URL, HTTPMethod, [String: String]?, Data?) throws -> Data)?
     
+    // スレッドセーフティのためのキュー
+    private let responseQueue = DispatchQueue(label: "com.recradiko2.test.mock-http-client", attributes: .concurrent)
+    
     // MARK: - Setup Methods
     
     func setupAuth1Success() {
+        // 実際のRadiko APIが返す形式に準拠したトークン
+        // Base64エンコードされたトークンを使用
+        let tokenData = "test_auth_token_1234567890abcdef_padding_data".data(using: .utf8)!
         auth1Response = Auth1MockResponse(
-            authToken: "dGVzdF9hdXRoX3Rva2VuX2RhdGE=", // Base64エンコードされたテストトークン
+            authToken: tokenData.base64EncodedString(),
             keyOffset: 8,
             keyLength: 16
         )
     }
     
     func setupAuth2Success() {
-        auth2Response = "JP13,東京都"
+        // 実際のRadiko APIが返す形式: エリアコード,エリア名（神奈川県エリア）
+        auth2Response = "JP14,神奈川県"
     }
     
     func setupAuth2AreaRestricted() {
-        auth2Response = "," // カンマだけの無効なレスポンス（エリア制限）
+        // エリア制限時は空文字列を返す
+        auth2Response = ""
     }
     
     func setupCompleteFlow() {
@@ -124,12 +132,12 @@ class MockHTTPClient: HTTPClientProtocol {
         let urlString = endpoint.absoluteString
         
         switch true {
-        case urlString.contains("auth1"):
+        case urlString.contains("v2/api/auth1"):
             // auth1はrequestWithHeadersで呼び出されるべき
             // requestDataから呼ばれた場合は空データを返す
             return Data()
             
-        case urlString.contains("auth2"):
+        case urlString.contains("v2/api/auth2"):
             return try handleAuth2Request(headers: headers)
             
         case urlString.contains("station/list"):
@@ -139,6 +147,14 @@ class MockHTTPClient: HTTPClientProtocol {
         case urlString.contains("program/station"):
             programListRequestCount += 1
             return programListResponse ?? createMockProgramListXML()
+            
+        case urlString.contains("program/by_id"):
+            // 番組詳細取得のケースを追加
+            return dataToReturn ?? createMockProgramDetailsXML(programId: "test_program_001")
+            
+        case urlString.contains("ts/playlist.m3u8"):
+            // M3U8プレイリスト取得のケースを追加
+            return createMockM3U8Playlist()
             
         default:
             return Data()
@@ -155,14 +171,9 @@ class MockHTTPClient: HTTPClientProtocol {
         }
         
         // auth1はレスポンスヘッダーで情報を返すため、
-        // テスト用に特別なフォーマットのデータを返す
-        let responseData = """
-        X-Radiko-AuthToken: \(response.authToken)
-        X-Radiko-KeyOffset: \(response.keyOffset)
-        X-Radiko-KeyLength: \(response.keyLength)
-        """.data(using: .utf8)!
-        
-        return responseData
+        // requestWithHeadersメソッドで処理される
+        // このメソッドからは空データを返す
+        return Data()
     }
     
     private func handleAuth2Request(headers: [String: String]?) throws -> Data {
@@ -180,6 +191,7 @@ class MockHTTPClient: HTTPClientProtocol {
             throw HTTPError.serverError
         }
         
+        // エリア制限の場合は空のレスポンスを返す（RadikoAuthServiceで処理される）
         return response.data(using: .utf8)!
     }
     
@@ -188,27 +200,34 @@ class MockHTTPClient: HTTPClientProtocol {
     private func createMockStationListXML() -> Data {
         let xml = """
         <?xml version="1.0" encoding="UTF-8"?>
-        <stations area_id="JP13" area_name="東京都">
-            <station id="TBS" area_id="JP13">
+        <stations area_id="JP14" area_name="神奈川県">
+            <station id="TBS" area_id="JP14">
                 <name>TBSラジオ</name>
                 <ascii_name>TBS RADIO</ascii_name>
                 <logo>https://example.com/tbs_logo.png</logo>
                 <banner>https://example.com/tbs_banner.png</banner>
                 <href>https://www.tbsradio.jp/</href>
             </station>
-            <station id="QRR" area_id="JP13">
+            <station id="QRR" area_id="JP14">
                 <name>文化放送</name>
                 <ascii_name>JOQR</ascii_name>
                 <logo>https://example.com/qrr_logo.png</logo>
                 <banner>https://example.com/qrr_banner.png</banner>
                 <href>https://www.joqr.co.jp/</href>
             </station>
-            <station id="LFR" area_id="JP13">
-                <name>ニッポン放送</name>
-                <ascii_name>NIPPON BROADCASTING SYSTEM</ascii_name>
-                <logo>https://example.com/lfr_logo.png</logo>
-                <banner>https://example.com/lfr_banner.png</banner>
-                <href>https://www.1242.com/</href>
+            <station id="JORF" area_id="JP14">
+                <name>ラジオ日本</name>
+                <ascii_name>RADIO NIPPON</ascii_name>
+                <logo>https://example.com/jorf_logo.png</logo>
+                <banner>https://example.com/jorf_banner.png</banner>
+                <href>https://www.radionikkei.jp/</href>
+            </station>
+            <station id="BAYFM78" area_id="JP14">
+                <name>bayfm78</name>
+                <ascii_name>Bay FM 78</ascii_name>
+                <logo>https://example.com/bayfm_logo.png</logo>
+                <banner>https://example.com/bayfm_banner.png</banner>
+                <href>https://www.bayfm.co.jp/</href>
             </station>
         </stations>
         """
@@ -253,6 +272,24 @@ class MockHTTPClient: HTTPClientProtocol {
         """
         return xml.data(using: .utf8)!
     }
+    
+    private func createMockM3U8Playlist() -> Data {
+        let m3u8 = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:5
+        #EXT-X-MEDIA-SEQUENCE:0
+        #EXT-X-KEY:METHOD=AES-128,URI="https://radiko.jp/v2/api/ts/key?token=test_token",IV=0x00000000000000000000000000000001
+        #EXTINF:5.0,
+        https://example.com/segment0.aac
+        #EXTINF:5.0,
+        https://example.com/segment1.aac
+        #EXTINF:5.0,
+        https://example.com/segment2.aac
+        #EXT-X-ENDLIST
+        """
+        return m3u8.data(using: .utf8)!
+    }
 }
 
 // MARK: - Response Models
@@ -266,6 +303,49 @@ struct Auth1MockResponse {
 // MARK: - Radiko専用拡張
 
 extension MockHTTPClient {
+    
+    // 追加のセットアップメソッド
+    func setupAuth1FailWithKeyExtraction() {
+        // キー抽出に失敗する不正なトークンを設定
+        auth1Response = Auth1MockResponse(
+            authToken: "invalid_token",
+            keyOffset: 100,  // 範囲外のオフセット
+            keyLength: 16
+        )
+    }
+    
+    func setupAuth1FailWithInvalidToken() {
+        // 無効なトークンを設定
+        auth1Response = Auth1MockResponse(
+            authToken: "",  // 空のトークン
+            keyOffset: 8,
+            keyLength: 16
+        )
+    }
+    
+    func setupProgramDetailsSuccess(programId: String) {
+        // 番組詳細のモックレスポンスを設定
+        let xml = createMockProgramDetailsXML(programId: programId)
+        dataToReturn = xml
+    }
+    
+    private func createMockProgramDetailsXML(programId: String) -> Data {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <prog>
+            <id>\(programId)</id>
+            <station_id>TBS</station_id>
+            <ft>20250726220000</ft>
+            <to>20250726240000</to>
+            <title>テスト番組</title>
+            <info>テスト番組の詳細情報</info>
+            <pfm>テストパーソナリティ</pfm>
+            <img>https://example.com/test_image.jpg</img>
+            <ts>1</ts>
+        </prog>
+        """
+        return xml.data(using: .utf8)!
+    }
     
     func requestXML(_ endpoint: URL,
                     method: HTTPMethod = .get,
@@ -297,7 +377,7 @@ extension MockHTTPClient {
         }
         
         // auth1リクエストの場合、適切なヘッダーを返す
-        if endpoint.absoluteString.contains("auth1") {
+        if endpoint.absoluteString.contains("v2/api/auth1") {
             auth1RequestCount += 1
             
             guard let auth1Response = auth1Response else {

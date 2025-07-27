@@ -8,6 +8,7 @@
 import Foundation
 import Combine
 
+
 /// Radiko認証サービスプロトコル
 protocol AuthServiceProtocol {
     /// 現在の認証情報
@@ -48,6 +49,7 @@ class RadikoAuthService: AuthServiceProtocol {
     // MARK: - Properties
     private var isInitialized = false
     private let initializationQueue = DispatchQueue(label: "RadikoAuthService.initialization", attributes: .concurrent)
+    private var ongoingAuthenticationTask: Task<AuthInfo, Error>?
     
     // MARK: - Initializer
     init(httpClient: HTTPClientProtocol = HTTPClient(), 
@@ -75,39 +77,55 @@ class RadikoAuthService: AuthServiceProtocol {
             return cached
         }
         
-        // Step 1: auth1リクエスト
-        let auth1Response: Auth1Response
-        do {
-            auth1Response = try await performAuth1()
-        } catch {
-            throw RadikoError.authenticationFailed
+        // 進行中の認証処理がある場合は、それを待つ
+        if let ongoingTask = initializationQueue.sync(execute: { ongoingAuthenticationTask }) {
+            return try await ongoingTask.value
         }
         
-        // Step 2: パーシャルキー生成
-        let partialKey = extractPartialKey(
-            from: auth1Response.authToken,
-            offset: auth1Response.keyOffset,
-            length: auth1Response.keyLength
-        )
-        
-        // Step 3: auth2リクエスト
-        let authInfo: AuthInfo
-        do {
-            authInfo = try await performAuth2(
-                authToken: auth1Response.authToken,
-                partialKey: partialKey
+        // 新しい認証処理を開始
+        let authTask = Task<AuthInfo, Error> {
+            // Step 1: auth1リクエスト
+            let auth1Response: Auth1Response
+            do {
+                auth1Response = try await performAuth1()
+            } catch {
+                throw RadikoError.authenticationFailed
+            }
+            
+            // Step 2: パーシャルキー生成
+            let partialKey = extractPartialKey(
+                from: auth1Response.authToken,
+                offset: auth1Response.keyOffset,
+                length: auth1Response.keyLength
             )
-        } catch {
-            throw RadikoError.authenticationFailed
+            
+            // Step 3: auth2リクエスト
+            let authInfo: AuthInfo
+            do {
+                authInfo = try await performAuth2(
+                    authToken: auth1Response.authToken,
+                    partialKey: partialKey
+                )
+            } catch {
+                throw RadikoError.authenticationFailed
+            }
+            
+            // キャッシュ保存（スレッドセーフ）
+            initializationQueue.sync(flags: .barrier) {
+                _currentAuthInfo = authInfo
+                ongoingAuthenticationTask = nil
+            }
+            saveCachedAuth(authInfo)
+            
+            return authInfo
         }
         
-        // キャッシュ保存（スレッドセーフ）
+        // 進行中タスクとして設定
         initializationQueue.sync(flags: .barrier) {
-            _currentAuthInfo = authInfo
+            ongoingAuthenticationTask = authTask
         }
-        saveCachedAuth(authInfo)
         
-        return authInfo
+        return try await authTask.value
     }
     
     func refreshAuth() async throws -> AuthInfo {
@@ -171,7 +189,7 @@ class RadikoAuthService: AuthServiceProtocol {
     ///   - offset: オフセット
     ///   - length: 長さ
     /// - Returns: パーシャルキー
-    func extractPartialKey(from authToken: String, offset: Int, length: Int) -> String {
+    internal func extractPartialKey(from authToken: String, offset: Int, length: Int) -> String {
         // Base64デコード
         guard let tokenData = Data(base64Encoded: authToken) else {
             return ""
@@ -213,8 +231,14 @@ class RadikoAuthService: AuthServiceProtocol {
         )
         
         // レスポンス解析（形式: "JP13,東京都"）
-        let components = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
-            .components(separatedBy: ",")
+        let trimmedResponse = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // 空のレスポンスはエリア制限
+        if trimmedResponse.isEmpty {
+            throw RadikoError.areaRestricted
+        }
+        
+        let components = trimmedResponse.components(separatedBy: ",")
         
         guard components.count >= 2 else {
             throw RadikoError.invalidResponse
@@ -283,8 +307,10 @@ class RadikoAuthService: AuthServiceProtocol {
         initializationQueue.sync(flags: .barrier) {
             isInitialized = false
             _currentAuthInfo = nil
-            clearCachedAuth()
+            ongoingAuthenticationTask?.cancel()
+            ongoingAuthenticationTask = nil
         }
+        clearCachedAuth()
     }
 }
 
@@ -295,6 +321,35 @@ private struct Auth1Response {
     let authToken: String
     let keyOffset: Int
     let keyLength: Int
+}
+
+// MARK: - AuthStatus Definition
+
+/// 認証状態列挙型
+enum AuthStatus {
+    case notAuthenticated
+    case authenticated(AuthInfo)
+    case warning(AuthInfo, reason: String)
+    case expired(AuthInfo)
+    case invalid(AuthInfo, reason: String)
+    
+    var isUsable: Bool {
+        switch self {
+        case .authenticated, .warning:
+            return true
+        case .notAuthenticated, .expired, .invalid:
+            return false
+        }
+    }
+    
+    var authInfo: AuthInfo? {
+        switch self {
+        case .notAuthenticated:
+            return nil
+        case .authenticated(let info), .warning(let info, _), .expired(let info), .invalid(let info, _):
+            return info
+        }
+    }
 }
 
 // MARK: - Extensions
@@ -318,33 +373,6 @@ extension RadikoAuthService {
                 return .expired(authInfo)
             case .invalid(let reason):
                 return .invalid(authInfo, reason: reason)
-            }
-        }
-    }
-    
-    /// 認証状態列挙型
-    enum AuthStatus {
-        case notAuthenticated
-        case authenticated(AuthInfo)
-        case warning(AuthInfo, reason: String)
-        case expired(AuthInfo)
-        case invalid(AuthInfo, reason: String)
-        
-        var isUsable: Bool {
-            switch self {
-            case .authenticated, .warning:
-                return true
-            case .notAuthenticated, .expired, .invalid:
-                return false
-            }
-        }
-        
-        var authInfo: AuthInfo? {
-            switch self {
-            case .notAuthenticated:
-                return nil
-            case .authenticated(let info), .warning(let info, _), .expired(let info), .invalid(let info, _):
-                return info
             }
         }
     }

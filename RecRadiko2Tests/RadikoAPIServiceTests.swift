@@ -131,8 +131,8 @@ struct RadikoAPIServiceTests {
         // モックレスポンス設定
         mockHTTPClient.setupCompleteFlow()
         
-        // When: 放送局リスト取得実行
-        let stations = try await apiService.fetchStations(for: "JP13")
+        // When: 放送局リスト取得実行（神奈川県エリア）
+        let stations = try await apiService.fetchStations(for: "JP14")
         
         // Then: 取得成功確認
         #expect(stations.count >= 1)
@@ -141,7 +141,7 @@ struct RadikoAPIServiceTests {
         let firstStation = stations[0]
         #expect(!firstStation.id.isEmpty)
         #expect(!firstStation.name.isEmpty)
-        #expect(firstStation.areaId == "JP13")
+        #expect(firstStation.areaId == "JP14")
     }
 }
 

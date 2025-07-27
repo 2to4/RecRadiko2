@@ -107,6 +107,10 @@ class RadikoAuthService: AuthServiceProtocol {
                     partialKey: partialKey
                 )
             } catch {
+                // エリア制限エラーはそのまま再スロー
+                if case RadikoError.areaRestricted = error {
+                    throw error
+                }
                 throw RadikoError.authenticationFailed
             }
             

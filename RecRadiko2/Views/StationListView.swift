@@ -29,9 +29,6 @@ struct StationListView: View {
         }
         .background(Color.appBackground)
         .frame(minWidth: 800, minHeight: 600)
-        .onAppear {
-            viewModel.loadInitialData()
-        }
         .overlay(
             // ローディング表示
             Group {

@@ -83,14 +83,33 @@ class RadikoXMLParser: XMLParserProtocol {
     ///   - areaId: エリアID
     /// - Returns: RadioStation（パース失敗時はnil）
     private func parseStation(from element: XMLElement, areaId: String?) -> RadioStation? {
-        guard let stationId = element.attribute(forName: "id")?.stringValue,
-              !stationId.isEmpty else {
+        // 実際のRadiko APIでは<station><id>TBS</id></station>形式
+        let stationId = element.childElement(name: "id")?.stringValue ?? 
+                       element.attribute(forName: "id")?.stringValue ?? ""
+        
+        guard !stationId.isEmpty else {
             return nil
         }
         
         let name = element.childElement(name: "name")?.stringValue ?? ""
         let displayName = element.childElement(name: "ascii_name")?.stringValue ?? ""
-        let logoURL = element.childElement(name: "logo")?.stringValue
+        
+        // ロゴURLの取得 - 複数のlogo要素がある場合は224x100を優先
+        var logoURL: String?
+        let logoElements = element.elements(forName: "logo")
+        for logoElement in logoElements {
+            if let width = logoElement.attribute(forName: "width")?.stringValue,
+               let height = logoElement.attribute(forName: "height")?.stringValue,
+               width == "224" && height == "100" {
+                logoURL = logoElement.stringValue
+                break
+            }
+        }
+        // 224x100が見つからない場合は最初のlogo要素を使用
+        if logoURL == nil && !logoElements.isEmpty {
+            logoURL = logoElements.first?.stringValue
+        }
+        
         let stationAreaId = element.attribute(forName: "area_id")?.stringValue ?? areaId ?? ""
         let bannerURL = element.childElement(name: "banner")?.stringValue
         let href = element.childElement(name: "href")?.stringValue

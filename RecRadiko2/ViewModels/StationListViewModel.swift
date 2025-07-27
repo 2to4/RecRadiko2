@@ -26,9 +26,11 @@ final class StationListViewModel: BaseViewModel {
     private let apiService: RadikoAPIServiceProtocol
     
     // MARK: - 初期化
-    init(apiService: RadikoAPIServiceProtocol = MockRadikoAPIService()) {
+    init(apiService: RadikoAPIServiceProtocol = RadikoAPIService(httpClient: RealHTTPClient())) {
+        print("🎯 [StationListViewModel] 初期化開始")
         self.apiService = apiService
         super.init()
+        print("✅ [StationListViewModel] 初期化完了、データ読み込み開始")
         loadInitialData()
     }
     
@@ -48,8 +50,10 @@ final class StationListViewModel: BaseViewModel {
     // MARK: - Public Methods
     /// 初期データの読み込み
     func loadInitialData() {
-        // AppStorageから前回選択した地域を復元（Phase 1では東京固定）
-        selectedArea = Area.tokyo
+        print("🌟 [StationListViewModel] 初期データ読み込み開始")
+        // AppStorageから前回選択した地域を復元（神奈川県に変更）
+        selectedArea = Area.kanagawa
+        print("📍 [StationListViewModel] 選択エリア設定: \(selectedArea.name) (\(selectedArea.id))")
         Task {
             await loadStations()
         }
@@ -57,18 +61,48 @@ final class StationListViewModel: BaseViewModel {
     
     /// 放送局一覧の読み込み
     func loadStations() async {
+        print("🚀 [StationListViewModel] 放送局読み込み開始: エリア \(selectedArea.id)")
+        NSLog("🚀 [StationListViewModel] 放送局読み込み開始: エリア %@", selectedArea.id)
         setLoading(true)
         clearError()
         
         do {
+            print("📞 [StationListViewModel] APIサービス呼び出し")
             let fetchedStations = try await apiService.fetchStations(for: selectedArea.id)
-            stations = fetchedStations
+            print("📊 [StationListViewModel] 取得完了: \(fetchedStations.count)件")
+            
+            // 詳細ログ: 取得した放送局の最初の3件を表示
+            for (index, station) in fetchedStations.prefix(3).enumerated() {
+                print("📻 [StationListViewModel] [第\(index+1)件] \(station.name) (ID: \(station.id)) - ロゴ: \(station.logoURL ?? "なし")")
+            }
+            
+            await MainActor.run {
+                stations = fetchedStations
+            }
         } catch {
-            showError(error.localizedDescription)
-            stations = []
+            print("❌ [StationListViewModel] エラー発生: \(error)")
+            print("❌ [StationListViewModel] エラータイプ: \(type(of: error))")
+            NSLog("❌ [StationListViewModel] エラー発生: %@", error.localizedDescription)
+            NSLog("❌ [StationListViewModel] エラータイプ: %@", String(describing: type(of: error)))
+            
+            if let radikoError = error as? RadikoError {
+                print("❌ [StationListViewModel] Radikoエラー詳細: \(radikoError)")
+                NSLog("❌ [StationListViewModel] Radikoエラー詳細: %@", String(describing: radikoError))
+                print("❌ [StationListViewModel] Radikoエラーメッセージ: \(radikoError.localizedDescription)")
+                NSLog("❌ [StationListViewModel] Radikoエラーメッセージ: %@", radikoError.localizedDescription)
+            }
+            
+            await MainActor.run {
+                let errorMsg = error.localizedDescription
+                print("💬 [StationListViewModel] UI表示エラーメッセージ: \(errorMsg)")
+                NSLog("💬 [StationListViewModel] UI表示エラーメッセージ: %@", errorMsg)
+                showError(errorMsg)
+                stations = []
+            }
         }
         
         setLoading(false)
+        print("🏁 [StationListViewModel] 読み込み完了 - 最終的な放送局数: \(stations.count)")
     }
     
     /// 地域選択

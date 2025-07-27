@@ -21,7 +21,7 @@ class RadikoAPIService {
     // MARK: - Initializer
     
     /// 初期化メソッド
-    init(httpClient: HTTPClientProtocol = HTTPClient(), 
+    init(httpClient: HTTPClientProtocol = RealHTTPClient(), 
          authService: AuthServiceProtocol? = nil,
          userDefaults: UserDefaultsProtocol = UserDefaults.standard) {
         self.httpClient = httpClient
@@ -34,14 +34,18 @@ class RadikoAPIService {
     
     func fetchStations(for areaId: String) async throws -> [RadioStation] {
         do {
+            print("🔍 [RadikoAPIService] 放送局取得開始: エリア \(areaId)")
+            
             // 認証確認（必要に応じて認証実行）
-            _ = try await ensureAuthenticated()
+            let authInfo = try await ensureAuthenticated()
+            print("✅ [RadikoAPIService] 認証完了: \(authInfo.areaId) - \(authInfo.areaName)")
             
             // 放送局リストXML取得
             let stationListURL = RadikoAPIEndpoint.stationListURL(for: areaId)
             guard let url = URL(string: stationListURL) else {
                 throw RadikoError.invalidResponse
             }
+            print("🌐 [RadikoAPIService] リクエストURL: \(url)")
             
             let xmlResponse = try await httpClient.requestText(
                 url,
@@ -49,6 +53,8 @@ class RadikoAPIService {
                 headers: [:],
                 body: nil
             )
+            print("📥 [RadikoAPIService] XMLレスポンス取得完了 (文字数: \(xmlResponse.count))")
+            print("📄 [RadikoAPIService] XMLレスポンス（最初の500文字）: \(xmlResponse.prefix(500))")
             
             // XML解析
             guard let xmlData = xmlResponse.data(using: .utf8) else {
@@ -56,12 +62,19 @@ class RadikoAPIService {
             }
             
             let stations = try xmlParser.parseStationList(from: xmlData)
+            print("🎯 [RadikoAPIService] パース完了: \(stations.count)件の放送局")
+            
+            for (index, station) in stations.prefix(3).enumerated() {
+                print("📻 [RadikoAPIService] [\(index+1)] \(station.name) (\(station.id)) - ロゴ: \(station.logoURL ?? "なし")")
+            }
             
             // データ検証
             let validationResult = xmlParser.validateStations(stations)
             if !validationResult.isValid {
+                print("❌ [RadikoAPIService] 検証失敗: \(validationResult.message ?? "不明なエラー")")
                 throw RadikoError.parsingError(validationResult.message ?? "放送局データの検証に失敗しました")
             }
+            print("✅ [RadikoAPIService] データ検証完了")
             
             return stations
             

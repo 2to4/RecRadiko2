@@ -41,7 +41,7 @@ final class ProgramListViewModel: BaseViewModel {
     }
     
     // MARK: - 初期化
-    init(apiService: RadikoAPIServiceProtocol = MockRadikoAPIService()) {
+    init(apiService: RadikoAPIServiceProtocol = RadikoAPIService(httpClient: RealHTTPClient())) {
         self.apiService = apiService
         super.init()
     }

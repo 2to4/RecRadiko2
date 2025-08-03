@@ -34,16 +34,40 @@ class ProgramScheduleViewModel: ObservableObject {
     ///   - stationId: 放送局ID
     ///   - date: 対象日
     func loadPrograms(for stationId: String, date: Date) async {
+        print("🔄 [ProgramScheduleViewModel] 番組読み込み開始 - 放送局ID: \(stationId), 日付: \(date)")
         isLoading = true
         error = nil
         
         do {
             let fetchedPrograms = try await apiService.fetchPrograms(stationId: stationId, date: date)
+            print("✅ [ProgramScheduleViewModel] 番組取得成功 - 件数: \(fetchedPrograms.count)")
             
             // 時間順にソート
             programs = fetchedPrograms.sorted { $0.startTime < $1.startTime }
             
+            if programs.isEmpty {
+                print("⚠️ [ProgramScheduleViewModel] 番組データが空です")
+            } else {
+                print("📋 [ProgramScheduleViewModel] 最初の番組: \(programs.first?.title ?? "不明")")
+                
+                // 番組間の時間的空白をチェック
+                for i in 0..<programs.count-1 {
+                    let currentProgram = programs[i]
+                    let nextProgram = programs[i+1]
+                    
+                    let gap = nextProgram.startTime.timeIntervalSince(currentProgram.endTime)
+                    let gapMinutes = Int(gap / 60)
+                    
+                    if gap > 120 { // 2分以上の空白のみ報告
+                        print("⚠️ [ProgramScheduleViewModel] 番組間空白発見: \(currentProgram.title) -> \(nextProgram.title), 空白時間: \(gapMinutes)分")
+                    } else if gap > 0 {
+                        print("ℹ️ [ProgramScheduleViewModel] 微細な間隔: \(currentProgram.title) -> \(nextProgram.title), \(gapMinutes)分（無視）")
+                    }
+                }
+            }
+            
         } catch {
+            print("❌ [ProgramScheduleViewModel] エラー: \(error)")
             self.error = error
             programs = []
         }

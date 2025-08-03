@@ -62,17 +62,39 @@ class RadikoXMLParser: XMLParserProtocol {
             throw ParsingError.invalidXML
         }
         
-        let programNodes: [XMLNode]
+        var allPrograms: [RadioProgram] = []
+        
+        // 各放送局を処理
+        let stationNodes: [XMLNode]
         do {
-            programNodes = try root.nodes(forXPath: "//prog")
+            stationNodes = try root.nodes(forXPath: "//station")
         } catch {
             throw ParsingError.invalidXML
         }
         
-        return programNodes.compactMap { node in
-            guard let element = node as? XMLElement else { return nil }
-            return parseProgram(from: element)
+        for stationNode in stationNodes {
+            guard let stationElement = stationNode as? XMLElement,
+                  let stationId = stationElement.attribute(forName: "id")?.stringValue else {
+                continue
+            }
+            
+            // この放送局の番組を取得
+            let programNodes: [XMLNode]
+            do {
+                programNodes = try stationElement.nodes(forXPath: ".//prog")
+            } catch {
+                continue
+            }
+            
+            for programNode in programNodes {
+                guard let programElement = programNode as? XMLElement else { continue }
+                if let program = parseProgram(from: programElement, stationId: stationId) {
+                    allPrograms.append(program)
+                }
+            }
         }
+        
+        return allPrograms
     }
     
     // MARK: - Private Methods
@@ -126,18 +148,20 @@ class RadikoXMLParser: XMLParserProtocol {
     }
     
     /// 番組要素をパース
-    /// - Parameter element: XMLElement
+    /// - Parameters:
+    ///   - element: XMLElement
+    ///   - stationId: 放送局ID
     /// - Returns: RadioProgram（パース失敗時はnil）
-    private func parseProgram(from element: XMLElement) -> RadioProgram? {
+    private func parseProgram(from element: XMLElement, stationId: String) -> RadioProgram? {
         guard let programId = element.attribute(forName: "id")?.stringValue,
               !programId.isEmpty else {
             return nil
         }
         
         let title = element.childElement(name: "title")?.stringValue ?? ""
-        let description = element.childElement(name: "info")?.stringValue ?? ""
+        let description = element.childElement(name: "desc")?.stringValue ?? 
+                         element.childElement(name: "info")?.stringValue ?? ""
         let imageURL = element.childElement(name: "img")?.stringValue
-        let stationId = element.attribute(forName: "station_id")?.stringValue ?? ""
         let isTimeFree = element.attribute(forName: "ts")?.stringValue == "1"
         
         // 時刻解析

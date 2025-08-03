@@ -91,14 +91,18 @@ class RadikoAPIService {
     
     func fetchPrograms(stationId: String, date: Date) async throws -> [RadioProgram] {
         do {
+            print("📊 [RadikoAPIService] 番組取得開始 - 放送局ID: \(stationId), 日付: \(date)")
+            
             // 認証確認（必要に応じて認証実行）
-            _ = try await ensureAuthenticated()
+            let authInfo = try await ensureAuthenticated()
+            print("✅ [RadikoAPIService] 認証完了 - エリア: \(authInfo.areaId)")
             
             // 番組表XML取得
-            let programListURL = RadikoAPIEndpoint.programListURL(stationId: stationId, date: date)
+            let programListURL = RadikoAPIEndpoint.programListURL(areaId: authInfo.areaId, date: date)
             guard let url = URL(string: programListURL) else {
                 throw RadikoError.invalidResponse
             }
+            print("🌐 [RadikoAPIService] 番組表URL: \(url)")
             
             let xmlResponse = try await httpClient.requestText(
                 url,
@@ -106,13 +110,84 @@ class RadikoAPIService {
                 headers: [:],
                 body: nil
             )
+            print("📥 [RadikoAPIService] XMLレスポンス取得完了 (文字数: \(xmlResponse.count))")
+            print("📄 [RadikoAPIService] XMLレスポンス（最初の500文字）: \(xmlResponse.prefix(500))")
             
             // XML解析
             guard let xmlData = xmlResponse.data(using: .utf8) else {
                 throw RadikoError.parsingError("XML文字列をDataに変換できませんでした")
             }
             
-            let programs = try xmlParser.parseProgramList(from: xmlData)
+            let allPrograms = try xmlParser.parseProgramList(from: xmlData)
+            print("🔍 [RadikoAPIService] 全番組数: \(allPrograms.count)")
+            
+            // **詳細デバッグ: 全stationIDを確認**
+            let allStationIds = Set(allPrograms.map { $0.stationId })
+            print("🏢 [RadikoAPIService] 発見されたstationID一覧: \(allStationIds.sorted())")
+            
+            // **詳細デバッグ: 指定stationIDの完全一致確認**
+            let exactMatches = allPrograms.filter { $0.stationId == stationId }
+            let partialMatches = allPrograms.filter { $0.stationId.contains(stationId) || stationId.contains($0.stationId) }
+            print("✅ [RadikoAPIService] 完全一致: \(exactMatches.count)件, 部分一致: \(partialMatches.count)件")
+            
+            // 指定された放送局の番組のみをフィルタリング
+            let filteredPrograms = exactMatches
+            print("✨ [RadikoAPIService] フィルタ後の番組数: \(filteredPrograms.count) (放送局ID: \(stationId))")
+            
+            // **詳細デバッグ: 時間範囲の確認**
+            if !filteredPrograms.isEmpty {
+                let sortedByTime = filteredPrograms.sorted { $0.startTime < $1.startTime }
+                let firstProgram = sortedByTime.first!
+                let lastProgram = sortedByTime.last!
+                print("⏰ [RadikoAPIService] 時間範囲: \(DateFormatter.timeLogFormatter.string(from: firstProgram.startTime)) - \(DateFormatter.timeLogFormatter.string(from: lastProgram.endTime))")
+                
+                // **欠損時間帯の詳細調査**
+                for i in 0..<sortedByTime.count-1 {
+                    let current = sortedByTime[i]
+                    let next = sortedByTime[i+1]
+                    let gap = next.startTime.timeIntervalSince(current.endTime)
+                    if gap > 300 { // 5分以上の空白
+                        let gapHours = Int(gap / 3600)
+                        let gapMinutes = Int((gap.truncatingRemainder(dividingBy: 3600)) / 60)
+                        print("🚨 [RadikoAPIService] 大きな空白発見: \(DateFormatter.timeLogFormatter.string(from: current.endTime)) - \(DateFormatter.timeLogFormatter.string(from: next.startTime)) (\(gapHours)時間\(gapMinutes)分)")
+                        
+                        // **この時間帯に他のstationIDで番組があるかチェック**
+                        let gapStart = current.endTime
+                        let gapEnd = next.startTime
+                        let programsInGap = allPrograms.filter { program in
+                            return program.startTime >= gapStart && program.startTime < gapEnd
+                        }
+                        
+                        if !programsInGap.isEmpty {
+                            let gapStationIds = Set(programsInGap.map { $0.stationId })
+                            print("🔍 [RadikoAPIService] 空白時間帯の他station番組: \(programsInGap.count)件, stationID: \(gapStationIds.sorted())")
+                            
+                            // 最初のいくつかを詳細表示
+                            for (index, program) in programsInGap.prefix(3).enumerated() {
+                                print("    [\(index+1)] \(DateFormatter.timeLogFormatter.string(from: program.startTime)) \(program.stationId): \(program.title)")
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // フィルタリング後に再度時間順ソート（重要！）
+            let programs = filteredPrograms.sorted { $0.startTime < $1.startTime }
+            print("🔄 [RadikoAPIService] 時間順ソート完了")
+            
+            // 番組の連続性をチェック（詳細ログ）
+            for i in 0..<programs.count-1 {
+                let current = programs[i]
+                let next = programs[i+1]
+                let gap = next.startTime.timeIntervalSince(current.endTime)
+                let gapMinutes = Int(gap / 60)
+                
+                if gap > 0 {
+                    print("⏰ [RadikoAPIService] 番組間隔: \(current.title)(\(DateFormatter.timeLogFormatter.string(from: current.endTime))) -> \(next.title)(\(DateFormatter.timeLogFormatter.string(from: next.startTime))): \(gapMinutes)分")
+                } else if gap < 0 {
+                    print("⚠️ [RadikoAPIService] 番組重複: \(current.title) と \(next.title): \(abs(gapMinutes))分重複")
+                }
+            }
             
             // データ検証
             let validationResult = xmlParser.validatePrograms(programs)
@@ -175,6 +250,16 @@ class RadikoAPIService {
             return authSvc
         }
     }
+}
+
+// MARK: - DateFormatter Extension for Logging
+extension DateFormatter {
+    static let timeLogFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
 }
 
 // MARK: - RadikoAPIServiceProtocol Compliance

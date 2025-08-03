@@ -79,7 +79,7 @@ enum RadikoAPIEndpoint {
     static let auth1 = "https://radiko.jp/v2/api/auth1"
     static let auth2 = "https://radiko.jp/v2/api/auth2"
     static let stationList = "https://radiko.jp/v3/station/list"
-    static let programList = "https://radiko.jp/v3/program/station/weekly"
+    static let programList = "https://radiko.jp/v3/program/date"
     static let streamingPlaylist = "https://radiko.jp/v2/api/ts/playlist.m3u8"
     
     /// 地域別放送局リストURL
@@ -89,20 +89,16 @@ enum RadikoAPIEndpoint {
         return "\(stationList)/\(areaId).xml"
     }
     
-    /// 放送局別番組表URL
+    /// 番組表URL
     /// - Parameters:
-    ///   - stationId: 放送局ID
-    ///   - date: 対象日 (省略時は週間)
+    ///   - areaId: エリアID (例: JP14)
+    ///   - date: 対象日
     /// - Returns: 番組表URL
-    static func programListURL(stationId: String, date: Date? = nil) -> String {
-        if let date = date {
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyyMMdd"
-            let dateString = formatter.string(from: date)
-            return "\(programList)/\(stationId)/\(dateString).xml"
-        } else {
-            return "\(programList)/\(stationId).xml"
-        }
+    static func programListURL(areaId: String, date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd"
+        let dateString = formatter.string(from: date)
+        return "\(programList)/\(dateString)/\(areaId).xml"
     }
     
     /// ストリーミングプレイリストURL

@@ -275,6 +275,83 @@ class Program:
     sub_genre: str       # サブジャンル
 ```
 
+#### 🚨 **番組ID重複問題について（重要）**
+
+##### 重複発生の仕組み
+Radiko APIの番組表XMLでは、同一番組の前後編や複数パートで**同じ番組ID**が使用される場合があります：
+
+```xml
+<!-- 実際のAPI例：同じID "11983412" が異なる時間帯で重複 -->
+<prog id="11983412" ft="20250803130000" to="20250803150000">
+    <title>爆笑問題の日曜サンデー (1)</title>
+</prog>
+<prog id="11983412" ft="20250803150000" to="20250803170000">
+    <title>爆笑問題の日曜サンデー (2)</title>
+</prog>
+```
+
+##### 問題の影響
+- **データ重複**: 同じIDを持つ番組がSwiftUIのListで衝突
+- **表示欠損**: 後から処理された番組で前の番組が上書きされる
+- **空白時間**: 重複により番組が表示されず、空白時間として認識される
+
+##### 解決方法1: 複合一意キー生成
+番組IDと開始時刻を組み合わせた一意キーを生成：
+
+```python
+def generate_unique_id(program_id: str, start_time: datetime) -> str:
+    """番組IDと開始時刻を組み合わせた一意キーを生成"""
+    timestamp = int(start_time.timestamp())
+    return f"{program_id}_{timestamp}"
+
+# 使用例
+unique_id = generate_unique_id("11983412", datetime(2025, 8, 3, 13, 0))
+# 結果: "11983412_1722664800"
+```
+
+##### 解決方法2: Swift実装例
+```swift
+struct RadioProgram: Identifiable {
+    let programId: String       // 番組ID（Radiko APIから取得）
+    let startTime: Date         // 開始時刻
+    
+    /// Identifiableプロトコルのid実装
+    /// 番組IDと開始時刻を組み合わせて一意性を確保
+    var id: String {
+        return "\(programId)_\(Int(startTime.timeIntervalSince1970))"
+    }
+}
+```
+
+##### 検出方法
+XMLパース時に重複IDを検出：
+
+```python
+def detect_duplicate_ids(programs: List[Program]) -> Dict[str, List[Program]]:
+    """重複する番組IDを検出"""
+    id_groups = {}
+    for program in programs:
+        if program.id not in id_groups:
+            id_groups[program.id] = []
+        id_groups[program.id].append(program)
+    
+    # 重複IDのみを返す
+    return {id: progs for id, progs in id_groups.items() if len(progs) > 1}
+
+# ログ出力例
+duplicates = detect_duplicate_ids(programs)
+for program_id, duplicate_programs in duplicates.items():
+    print(f"重複ID: {program_id}")
+    for prog in duplicate_programs:
+        print(f"  {prog.start_time} - {prog.end_time}: {prog.title}")
+```
+
+##### 実装時の注意点
+1. **パース段階での対応**: XMLパース時に一意キーを生成
+2. **既存データとの互換性**: 既存の番組IDも保持（別フィールドとして）
+3. **デバッグログ**: 重複検出時の詳細ログ出力
+4. **テストケース**: 重複IDを含む番組データでのテスト実装
+
 ---
 
 ## 3. ストリーミングAPI

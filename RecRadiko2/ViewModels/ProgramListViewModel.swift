@@ -81,10 +81,12 @@ final class ProgramListViewModel: BaseViewModel {
     /// 番組一覧の読み込み
     func loadPrograms() async {
         guard let station = currentStation else { 
+            print("⚠️ [ProgramListViewModel] 放送局が選択されていません")
             programs = []
             return 
         }
         
+        print("🔄 [ProgramListViewModel] 番組読み込み開始 - 放送局: \(station.name) (\(station.id))")
         setLoading(true)
         clearError()
         
@@ -93,8 +95,16 @@ final class ProgramListViewModel: BaseViewModel {
                 stationId: station.id, 
                 date: selectedDate
             )
+            print("✅ [ProgramListViewModel] 番組取得成功 - 件数: \(fetchedPrograms.count)")
             programs = fetchedPrograms.sorted { $0.startTime < $1.startTime }
+            
+            if programs.isEmpty {
+                print("⚠️ [ProgramListViewModel] 番組データが空です")
+            } else {
+                print("📋 [ProgramListViewModel] 最初の番組: \(programs.first?.title ?? "不明")")
+            }
         } catch {
+            print("❌ [ProgramListViewModel] エラー: \(error)")
             showError(error.localizedDescription)
             programs = []
         }

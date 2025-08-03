@@ -33,7 +33,7 @@ struct StationCell: View {
         .onTapGesture {
             onTap()
         }
-        .accessibilityLabel("\(station.displayName)放送局")
+        .accessibilityLabel("\(station.name)放送局")
         .accessibilityHint("タップして番組一覧を表示")
         .accessibilityAddTraits(.isButton)
     }
@@ -73,7 +73,7 @@ struct StationCell: View {
     
     /// 放送局名
     private var stationName: some View {
-        Text(station.displayName)
+        Text(station.name)
             .font(.appCaption)
             .foregroundColor(.appPrimaryText)
             .lineLimit(1)

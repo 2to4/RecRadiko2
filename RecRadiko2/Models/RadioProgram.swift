@@ -9,7 +9,7 @@ import Foundation
 
 /// 番組情報を表すモデル
 struct RadioProgram: Identifiable, Hashable, Codable {
-    let id: String              // 番組ID
+    let programId: String       // 番組ID（Radiko APIから取得）
     let title: String           // 番組名
     let description: String     // 番組説明
     let startTime: Date         // 開始時刻
@@ -19,8 +19,14 @@ struct RadioProgram: Identifiable, Hashable, Codable {
     let imageURL: String?       // 番組画像URL
     let isTimeFree: Bool        // タイムフリー対応フラグ
     
+    /// Identifiableプロトコルのid実装
+    /// 番組IDと開始時刻を組み合わせて一意性を確保
+    var id: String {
+        return "\(programId)_\(Int(startTime.timeIntervalSince1970))"
+    }
+    
     init(id: String, title: String, description: String, startTime: Date, endTime: Date, personalities: [String], stationId: String, imageURL: String? = nil, isTimeFree: Bool = false) {
-        self.id = id
+        self.programId = id
         self.title = title
         self.description = description
         self.startTime = startTime

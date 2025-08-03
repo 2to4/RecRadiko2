@@ -13,7 +13,6 @@ struct ProgramScheduleView: View {
     @ObservedObject var recordingManager: RecordingManager
     @Binding var selectedStation: RadioStation?
     @State private var selectedDate: Date = Date()
-    @State private var showingDatePicker = false
     @State private var showingRecordingProgress = false
     
     var body: some View {
@@ -100,27 +99,28 @@ struct ProgramScheduleView: View {
     // MARK: - Header View
     private var headerView: some View {
         HStack {
-            // 日付選択ボタン
-            Button(action: { showingDatePicker.toggle() }) {
+            // 日付選択プルダウン（過去1週間）
+            Menu {
+                ForEach(pastWeekDates, id: \.self) { date in
+                    Button(DateFormatter.programDateFormatter.string(from: date)) {
+                        selectedDate = date
+                    }
+                }
+            } label: {
                 HStack {
                     Image(systemName: "calendar")
                     Text(DateFormatter.programDateFormatter.string(from: selectedDate))
+                    Image(systemName: "chevron.down")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
-            }
-            .popover(isPresented: $showingDatePicker) {
-                DatePicker("日付を選択", selection: $selectedDate, displayedComponents: .date)
-                    .datePickerStyle(.graphical)
-                    .padding()
-                    .frame(width: 320, height: 400)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(6)
             }
             
             Spacer()
-            
-            // 今日ボタン
-            Button("今日") {
-                selectedDate = Date()
-            }
-            .disabled(Calendar.current.isDateInToday(selectedDate))
             
             // リロードボタン
             Button(action: {
@@ -138,11 +138,33 @@ struct ProgramScheduleView: View {
         .background(Color(NSColor.controlBackgroundColor))
     }
     
+    /// 過去1週間の日付配列を生成
+    private var pastWeekDates: [Date] {
+        let calendar = Calendar.current
+        let today = Date()
+        
+        return (0...6).compactMap { daysAgo in
+            calendar.date(byAdding: .day, value: -daysAgo, to: today)
+        }
+    }
+    
     // MARK: - Program List View
     private var programListView: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                ForEach(viewModel.programs) { program in
+                ForEach(Array(viewModel.programs.enumerated()), id: \.element.id) { index, program in
+                    // 前の番組との間に空白時間がある場合、空白表示を追加
+                    if index > 0 {
+                        let previousProgram = viewModel.programs[index - 1]
+                        let gap = program.startTime.timeIntervalSince(previousProgram.endTime)
+                        let gapMinutes = Int(gap / 60)
+                        
+                        // 2分以上の空白のみ表示（微細な時間差は無視）
+                        if gap > 120 { // 120秒 = 2分
+                            gapView(from: previousProgram.endTime, to: program.startTime)
+                        }
+                    }
+                    
                     ProgramRowView(
                         program: program, 
                         isRecording: viewModel.isRecording(program),
@@ -157,6 +179,45 @@ struct ProgramScheduleView: View {
             }
         }
         .background(Color(NSColor.textBackgroundColor))
+    }
+    
+    /// 番組間の空白時間を表示するビュー
+    /// - Parameters:
+    ///   - startTime: 空白開始時間
+    ///   - endTime: 空白終了時間
+    /// - Returns: 空白表示ビュー
+    private func gapView(from startTime: Date, to endTime: Date) -> some View {
+        let gapDuration = endTime.timeIntervalSince(startTime)
+        let gapMinutes = Int(gapDuration / 60)
+        
+        return HStack {
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(DateFormatter.timeFormatter.string(from: startTime))
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundColor(.secondary)
+                Text("↓")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text(DateFormatter.timeFormatter.string(from: endTime))
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+            .frame(width: 60)
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text("放送休止")
+                    .font(.headline)
+                    .foregroundColor(.secondary)
+                Text("\(gapMinutes)分間の休止時間")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            Spacer()
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.3))
     }
 }
 
@@ -240,6 +301,13 @@ extension DateFormatter {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "ja_JP")
         formatter.dateFormat = "M月d日(E)"
+        return formatter
+    }()
+    
+    static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.dateFormat = "HH:mm"
         return formatter
     }()
 }

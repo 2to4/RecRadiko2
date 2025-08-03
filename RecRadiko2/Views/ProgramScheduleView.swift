@@ -70,13 +70,21 @@ struct ProgramScheduleView: View {
     
     /// 録音開始
     private func startRecording(program: RadioProgram) {
-        guard let station = selectedStation else { return }
+        guard let station = selectedStation else { 
+            print("❌ [ProgramScheduleView] 録音エラー: 放送局が選択されていません")
+            return 
+        }
+        
+        print("🎙️ [ProgramScheduleView] 録音開始要求: \(program.title) (\(station.id))")
+        print("⏰ [ProgramScheduleView] 録音時間: \(program.startTime) - \(program.endTime)")
         
         Task {
             do {
                 // 出力ディレクトリ（デフォルトはDocuments/RecRadiko2）
                 let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
                 let outputDirectory = documentsPath.appendingPathComponent("RecRadiko2")
+                
+                print("📁 [ProgramScheduleView] 出力ディレクトリ: \(outputDirectory.path)")
                 
                 let settings = RecordingSettings(
                     stationId: station.id,
@@ -86,11 +94,15 @@ struct ProgramScheduleView: View {
                 )
                 
                 showingRecordingProgress = true
-                _ = try await recordingManager.startRecording(with: settings)
+                let recordingId = try await recordingManager.startRecording(with: settings)
+                print("✅ [ProgramScheduleView] 録音開始成功: ID=\(recordingId)")
                 
             } catch {
-                print("録音開始エラー: \(error)")
-                // エラーアラート表示（簡易実装）
+                print("❌ [ProgramScheduleView] 録音開始エラー: \(error)")
+                print("❌ [ProgramScheduleView] エラー詳細: \(error.localizedDescription)")
+                if let recordingError = error as? RecordingError {
+                    print("❌ [ProgramScheduleView] 録音エラータイプ: \(recordingError)")
+                }
                 showingRecordingProgress = false
             }
         }

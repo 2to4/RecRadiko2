@@ -7,6 +7,8 @@
 
 import Foundation
 
+private let logger = AppLogger.shared.category("StreamingDownloader")
+
 // MARK: - Array Extension for Chunking
 
 extension Array {
@@ -33,12 +35,31 @@ class StreamingDownloader {
     
     private let httpClient: HTTPClientProtocol
     private let maxConcurrentDownloads: Int
+    private var authHeaders: [String: String] = [:]
     
     // MARK: - Initialization
     
     init(httpClient: HTTPClientProtocol = HTTPClient(), maxConcurrentDownloads: Int = 3) {
         self.httpClient = httpClient
         self.maxConcurrentDownloads = maxConcurrentDownloads
+    }
+    
+    // MARK: - Authentication Headers
+    
+    /// 認証ヘッダーを設定
+    /// - Parameters:
+    ///   - authToken: 認証トークン
+    ///   - areaId: エリアID
+    func setAuthHeaders(authToken: String, areaId: String) {
+        logger.debug("認証ヘッダー設定: token=\(authToken.prefix(10))..., area=\(areaId)")
+        authHeaders = [
+            "X-Radiko-AuthToken": authToken,
+            "X-Radiko-AreaId": areaId,
+            "User-Agent": "curl/7.56.1",
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive"
+        ]
     }
     
     // MARK: - Single Segment Download
@@ -49,7 +70,10 @@ class StreamingDownloader {
     ///   - maxRetries: 最大リトライ回数
     /// - Returns: ダウンロードされたデータ
     func downloadSegment(from url: String, maxRetries: Int = 3) async throws -> Data {
+        logger.debug("セグメントダウンロード開始: \(url)")
+        
         guard let segmentURL = URL(string: url) else {
+            logger.error("無効なセグメントURL: \(url)")
             throw RecordingError.invalidURL
         }
         
@@ -57,21 +81,31 @@ class StreamingDownloader {
         
         for attempt in 0...maxRetries {
             do {
-                let data = try await httpClient.requestData(segmentURL, method: .get, headers: nil, body: nil)
+                logger.debug("セグメントダウンロード試行 \(attempt + 1)/\(maxRetries + 1): \(url)")
+                
+                // 認証ヘッダーを使用してリクエスト
+                let data = try await httpClient.requestData(segmentURL, method: .get, headers: authHeaders, body: nil)
+                
+                logger.debug("セグメントダウンロード成功: \(url) (\(data.count)バイト)")
                 return data
             } catch {
                 lastError = error
+                logger.warning("セグメントダウンロード失敗 (試行\(attempt + 1)): \(error.localizedDescription)")
+                
                 if attempt < maxRetries {
                     // 指数バックオフで待機
                     let delay = Double(1 << attempt)
+                    logger.debug("リトライ待機: \(delay)秒")
                     try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 }
             }
         }
         
         if let lastError = lastError {
+            logger.error("セグメントダウンロード最終失敗: \(url) - \(lastError.localizedDescription)")
             throw RecordingError.networkError(lastError)
         } else {
+            logger.error("セグメントダウンロード原因不明失敗: \(url)")
             throw RecordingError.downloadFailed
         }
     }

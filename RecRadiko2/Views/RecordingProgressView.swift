@@ -12,11 +12,13 @@ struct RecordingProgressView: View {
     // MARK: - Properties
     @ObservedObject var recordingManager: RecordingManager
     @Environment(\.dismiss) private var dismiss
+    @State private var errorMessage: String = ""
+    @State private var showError: Bool = false
     
     // MARK: - Body
     var body: some View {
         mainContent
-            .frame(width: 400, height: 250)
+            .frame(width: 450, height: showError ? 350 : 250)
             .padding(40)
             .background(Color.appUIBackground)
             .cornerRadius(12)
@@ -24,9 +26,13 @@ struct RecordingProgressView: View {
             .onChange(of: recordingManager.currentProgress?.state) { _, state in
                 switch state {
                 case .completed:
-                    dismiss()
-                case .failed:
-                    dismiss()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        dismiss()
+                    }
+                case .failed(let error):
+                    errorMessage = error.localizedDescription
+                    showError = true
+                    print("❌ [RecordingProgressView] エラー表示: \(errorMessage)")
                 default:
                     break
                 }
@@ -37,9 +43,15 @@ struct RecordingProgressView: View {
         VStack(spacing: 20) {
             titleView
             programView
-            progressBarView
-            progressInfoView
-            cancelButtonView
+            
+            if showError {
+                errorView
+            } else {
+                progressBarView
+                progressInfoView
+            }
+            
+            buttonView
         }
     }
     
@@ -98,14 +110,57 @@ struct RecordingProgressView: View {
         }
     }
     
-    private var cancelButtonView: some View {
-        Button("キャンセル") {
-            recordingManager.stopAllRecordings()
-            dismiss()
+    // エラー表示ビュー
+    private var errorView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.largeTitle)
+                .foregroundColor(.red)
+            
+            Text("録音エラー")
+                .font(.headline)
+                .foregroundColor(.red)
+            
+            ScrollView {
+                Text(errorMessage)
+                    .font(.body)
+                    .foregroundColor(.primary)
+                    .padding(12)
+                    .background(Color.secondary.opacity(0.1))
+                    .cornerRadius(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 100)
         }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.large)
-        .accessibilityLabel("録音をキャンセル")
+    }
+    
+    // ボタンビュー（エラー時と通常時で切り替え）
+    private var buttonView: some View {
+        HStack(spacing: 16) {
+            if showError {
+                Button("閉じる") {
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                
+                Button("再試行") {
+                    showError = false
+                    errorMessage = ""
+                    // 再試行ロジックは今後実装
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            } else {
+                Button("キャンセル") {
+                    recordingManager.stopAllRecordings()
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .accessibilityLabel("録音をキャンセル")
+            }
+        }
     }
     
     // MARK: - Computed Properties

@@ -33,6 +33,7 @@ class RadikoAuthService: AuthServiceProtocol {
     private let httpClient: HTTPClientProtocol
     private let userDefaults: UserDefaultsProtocol
     private let appKey = "bcd151073c03b352e1ef2fd66c32209da9ca0afa"
+    private let logger = AppLogger.shared.category("RadikoAuth")
     
     private var _currentAuthInfo: AuthInfo?
     
@@ -72,30 +73,44 @@ class RadikoAuthService: AuthServiceProtocol {
     func authenticate() async throws -> AuthInfo {
         ensureInitialized()
         
-        // TestRadikoAPI.swiftと同じく常に新しい認証を実行（キャッシュ無効）
-        print("🔐 [RadikoAuthService] 新しい認証を実行（キャッシュ無効）")
-        
-        // Step 1: auth1リクエスト
-        print("🔑 [RadikoAuthService] auth1リクエスト実行")
-        let auth1Response = try await performAuth1()
-        print("✅ [RadikoAuthService] auth1完了: offset=\(auth1Response.keyOffset), length=\(auth1Response.keyLength)")
-        
-        // Step 2: パーシャルキー生成
-        let partialKey = extractPartialKey(
-            from: auth1Response.authToken,
-            offset: auth1Response.keyOffset,
-            length: auth1Response.keyLength
-        )
-        
-        // Step 3: auth2リクエスト
-        print("🔑 [RadikoAuthService] auth2リクエスト実行: partialKey=\(partialKey.prefix(10))...")
-        let authInfo = try await performAuth2(
-            authToken: auth1Response.authToken,
-            partialKey: partialKey
-        )
-        print("✅ [RadikoAuthService] auth2完了: エリア=\(authInfo.areaId) - \(authInfo.areaName)")
-        
-        return authInfo
+        do {
+            // TestRadikoAPI.swiftと同じく常に新しい認証を実行（キャッシュ無効）
+            logger.info("新しい認証を実行（キャッシュ無効）")
+            
+            // Step 1: auth1リクエスト
+            logger.debug("auth1リクエスト実行")
+            let auth1Response = try await performAuth1()
+            logger.info("auth1完了: offset=\(auth1Response.keyOffset), length=\(auth1Response.keyLength)")
+            
+            // Step 2: パーシャルキー生成
+            let partialKey = extractPartialKey(
+                from: auth1Response.authToken,
+                offset: auth1Response.keyOffset,
+                length: auth1Response.keyLength
+            )
+            logger.debug("パーシャルキー生成完了: length=\(partialKey.count)")
+            
+            // Step 3: auth2リクエスト
+            logger.debug("auth2リクエスト実行: partialKey=\(partialKey.prefix(10))...")
+            let authInfo = try await performAuth2(
+                authToken: auth1Response.authToken,
+                partialKey: partialKey
+            )
+            logger.info("auth2完了: エリア=\(authInfo.areaId) - \(authInfo.areaName)")
+            
+            // 認証情報を保存
+            initializationQueue.sync(flags: .barrier) {
+                _currentAuthInfo = authInfo
+            }
+            logger.debug("認証情報を保存完了")
+            
+            return authInfo
+            
+        } catch {
+            logger.error("認証エラー: \(error)")
+            logger.error("エラー詳細: \(error.localizedDescription)")
+            throw error
+        }
     }
     
     func refreshAuth() async throws -> AuthInfo {
@@ -119,7 +134,7 @@ class RadikoAuthService: AuthServiceProtocol {
     /// auth1リクエスト実行
     private func performAuth1() async throws -> Auth1Response {
         guard let url = URL(string: RadikoAPIEndpoint.auth1) else {
-            print("❌ [RadikoAuthService] 無効なURL: \(RadikoAPIEndpoint.auth1)")
+            logger.error("無効なURL: \(RadikoAPIEndpoint.auth1)")
             throw HTTPError.invalidURL
         }
         
@@ -131,9 +146,9 @@ class RadikoAuthService: AuthServiceProtocol {
             "X-Radiko-User": "dummy_user"
         ]
         
-        print("🌐 [RadikoAuthService] auth1リクエスト開始")
-        print("🌐 [RadikoAuthService] URL: \(url)")
-        print("🌐 [RadikoAuthService] ヘッダー: \(headers)")
+        logger.verbose("auth1リクエスト開始")
+        logger.verbose("URL: \(url)")
+        logger.verbose("ヘッダー: \(headers)")
         
         // TestRadikoAPI.swiftと同じ方法でHTTPレスポンスを取得
         var request = URLRequest(url: url)
@@ -146,27 +161,27 @@ class RadikoAuthService: AuthServiceProtocol {
             let result = try await URLSession.shared.data(for: request)
             data = result.0
             response = result.1
-            print("🌐 [RadikoAuthService] レスポンス受信: データサイズ=\(data.count)バイト")
+            logger.verbose("レスポンス受信: データサイズ=\(data.count)バイト")
             
             if let responseString = String(data: data, encoding: .utf8) {
-                print("🌐 [RadikoAuthService] レスポンス内容: \(responseString.prefix(200))")
+                logger.verbose("レスポンス内容: \(responseString.prefix(200))")
             }
         } catch {
-            print("❌ [RadikoAuthService] ネットワークエラー詳細: \(error)")
-            print("❌ [RadikoAuthService] エラータイプ: \(type(of: error))")
+            logger.error("ネットワークエラー詳細: \(error)")
+            logger.error("エラータイプ: \(type(of: error))")
             if let urlError = error as? URLError {
-                print("❌ [RadikoAuthService] URLError詳細: code=\(urlError.code.rawValue), \(urlError.localizedDescription)")
+                logger.error("URLError詳細: code=\(urlError.code.rawValue), \(urlError.localizedDescription)")
             }
             throw RadikoError.networkError(error)
         }
         
         guard let httpResponse = response as? HTTPURLResponse else {
-            print("❌ [RadikoAuthService] HTTPレスポンスの取得に失敗")
+            logger.error("HTTPレスポンスの取得に失敗")
             throw RadikoError.invalidResponse
         }
         
-        print("🌐 [RadikoAuthService] ステータスコード: \(httpResponse.statusCode)")
-        print("🌐 [RadikoAuthService] レスポンスヘッダー: \(httpResponse.allHeaderFields)")
+        logger.debug("ステータスコード: \(httpResponse.statusCode)")
+        logger.verbose("レスポンスヘッダー: \(httpResponse.allHeaderFields)")
         
         // TestRadikoAPI.swiftと同じ方法でヘッダー取得（大文字小文字区別なし）
         guard let authToken = httpResponse.value(forHTTPHeaderField: "X-Radiko-AuthToken"),
@@ -174,8 +189,8 @@ class RadikoAuthService: AuthServiceProtocol {
               let keyLengthStr = httpResponse.value(forHTTPHeaderField: "X-Radiko-KeyLength"),
               let keyOffset = Int(keyOffsetStr),
               let keyLength = Int(keyLengthStr) else {
-            print("❌ [RadikoAuthService] レスポンスヘッダー取得失敗")
-            print("❌ [RadikoAuthService] ステータスコード: \(httpResponse.statusCode)")
+            logger.error("レスポンスヘッダー取得失敗")
+            logger.error("ステータスコード: \(httpResponse.statusCode)")
             throw RadikoError.invalidResponse
         }
         
@@ -208,9 +223,9 @@ class RadikoAuthService: AuthServiceProtocol {
         // 指定位置から部分キー抽出（Pythonプロジェクトと同じロジック）
         let partialKeyData = keyData.subdata(in: offset..<(offset + length))
         
-        print("🔑 [RadikoAuthService] パーシャルキー生成: offset=\(offset), length=\(length)")
-        print("🔑 [RadikoAuthService] 元キー長: \(keyData.count), 抽出範囲: \(offset)..<\(offset + length)")
-        print("🔑 [RadikoAuthService] パーシャルキー: \(partialKeyData.base64EncodedString().prefix(10))...")
+        logger.verbose("パーシャルキー生成: offset=\(offset), length=\(length)")
+        logger.verbose("元キー長: \(keyData.count), 抽出範囲: \(offset)..<\(offset + length)")
+        logger.verbose("パーシャルキー: \(partialKeyData.base64EncodedString().prefix(10))...")
         
         return partialKeyData.base64EncodedString()
     }

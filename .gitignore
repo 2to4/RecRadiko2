@@ -126,6 +126,7 @@ Temporary Items
 
 # Log files
 *.log
+log/
 
 # Test results
 *.xcresult

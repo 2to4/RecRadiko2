@@ -7,6 +7,8 @@
 
 import Foundation
 
+private let logger = AppLogger.shared.category("RecordingManager")
+
 
 /// 録音状態
 enum RecordingState: Equatable {
@@ -108,16 +110,21 @@ class RecordingManager: ObservableObject {
     
     // MARK: - Initialization
     
-    init(authService: AuthServiceProtocol = RadikoAuthService(),
-         apiService: RadikoAPIServiceProtocol = RadikoAPIService(),
+    init(authService: AuthServiceProtocol? = nil,
+         apiService: RadikoAPIServiceProtocol? = nil,
          m3u8Parser: M3U8Parser = M3U8Parser(),
          streamingDownloader: StreamingDownloader = StreamingDownloader(),
          fileManager: FileManager = .default) {
-        self.authService = authService
-        self.apiService = apiService
+        
+        // 依存関係の初期化（共通のHTTPクライアントを使用）
+        let httpClient = RealHTTPClient()
+        self.authService = authService ?? RadikoAuthService(httpClient: httpClient)
+        self.apiService = apiService ?? RadikoAPIService(httpClient: httpClient)
         self.m3u8Parser = m3u8Parser
         self.streamingDownloader = streamingDownloader
         self.fileManager = fileManager
+        
+        print("✅ [RecordingManager] 初期化完了")
     }
     
     // MARK: - Recording Control
@@ -166,19 +173,32 @@ class RecordingManager: ObservableObject {
     
     /// 録音実行
     private func performRecording(recordingId: String, settings: RecordingSettings) async {
+        logger.info("録音実行開始: ID=\(recordingId), 放送局=\(settings.stationId)")
+        logger.debug("録音設定: 開始=\(settings.startTime), 終了=\(settings.endTime), 出力=\(settings.outputDirectory.path)")
+        
         do {
             // 1. 認証
+            logger.info("ステップ1: 認証開始")
             await updateProgress(recordingId: recordingId, state: .authenticating)
             try await authenticateIfNeeded()
+            logger.info("ステップ1: 認証完了")
             
             // 2. 番組情報取得
+            logger.info("ステップ2: 番組情報取得開始")
             let program = try await fetchProgramInfo(stationId: settings.stationId, 
                                                    startTime: settings.startTime)
+            if let program = program {
+                logger.info("ステップ2: 番組情報取得完了: \(program.title)")
+            } else {
+                logger.warning("ステップ2: 番組情報が見つかりません")
+            }
             
             // 3. プレイリスト取得
+            logger.info("ステップ3: プレイリスト取得開始")
             await updateProgress(recordingId: recordingId, state: .fetchingPlaylist)
             let playlistURL = try await buildPlaylistURL(settings: settings)
             let playlist = try await fetchPlaylist(from: playlistURL)
+            logger.info("ステップ3: プレイリスト取得完了: \(playlist.segments.count)セグメント")
             
             await updateProgress(recordingId: recordingId, 
                                state: .downloading,
@@ -186,28 +206,60 @@ class RecordingManager: ObservableObject {
                                currentProgram: program)
             
             // 4. セグメントダウンロード
+            logger.info("ステップ4: セグメントダウンロード開始")
             let segments = try await downloadSegments(playlist: playlist, 
                                                     settings: settings,
                                                     recordingId: recordingId)
+            logger.info("ステップ4: セグメントダウンロード完了: \(segments.count)セグメント")
             
             // 5. ファイル保存
+            logger.info("ステップ5: ファイル保存開始")
             await updateProgress(recordingId: recordingId, state: .saving)
             try await saveRecording(segments: segments, 
                                   settings: settings, 
                                   program: program)
+            logger.info("ステップ5: ファイル保存完了")
             
             // 6. 完了
+            logger.info("録音実行完了: ID=\(recordingId)")
             await updateProgress(recordingId: recordingId, state: .completed)
             
         } catch {
-            await updateProgress(recordingId: recordingId, state: .failed(error))
+            logger.error("録音エラー: \(error)")
+            logger.error("エラー詳細: \(error.localizedDescription)")
+            
+            // エラータイプ別の詳細ログ
+            if let recordingError = error as? RecordingError {
+                logger.error("RecordingError詳細: \(recordingError)")
+            } else if let httpError = error as? HTTPError {
+                logger.error("HTTPError詳細: \(httpError)")
+            } else {
+                logger.error("Unknown Error: \(type(of: error))")
+            }
+            
+            // より詳細なエラー情報を生成
+            let detailedError: Error
+            if let recordingError = error as? RecordingError {
+                detailedError = recordingError
+            } else if let httpError = error as? HTTPError {
+                detailedError = RecordingError.networkError(httpError)
+            } else {
+                detailedError = RecordingError.unknown(error.localizedDescription)
+            }
+            
+            await updateProgress(recordingId: recordingId, state: .failed(detailedError))
         }
     }
     
     /// 認証チェック
     private func authenticateIfNeeded() async throws {
+        logger.info("認証状態確認開始")
         if !authService.isAuthenticated() {
+            logger.info("認証が必要、認証プロセス開始")
             _ = try await authService.authenticate()
+            logger.info("認証完了")
+        } else {
+            logger.info("既に認証済み、認証をスキップ")
         }
     }
     
@@ -221,33 +273,125 @@ class RecordingManager: ObservableObject {
     
     /// プレイリストURL構築
     private func buildPlaylistURL(settings: RecordingSettings) async throws -> String {
+        logger.info("プレイリストURL構築開始: \(settings.stationId)")
+        
         let ftFormatter = DateFormatter()
         ftFormatter.dateFormat = "yyyyMMddHHmmss"
         
         let ft = ftFormatter.string(from: settings.startTime)
         let to = ftFormatter.string(from: settings.endTime)
         
-        return try streamingDownloader.buildStreamingURL(
+        logger.debug("録音時刻パラメータ: ft=\(ft), to=\(to)")
+        
+        // 認証情報を取得
+        guard let authInfo = authService.currentAuthInfo else {
+            logger.error("認証情報が取得できません")
+            throw RecordingError.authenticationError
+        }
+        
+        logger.debug("認証情報取得成功: token=\(authInfo.authToken.prefix(10))..., area=\(authInfo.areaId)")
+        
+        let streamingURL = try streamingDownloader.buildStreamingURL(
             stationId: settings.stationId,
             ft: ft,
             to: to
         )
+        
+        logger.info("ストリーミングURL構築完了: \(streamingURL)")
+        return streamingURL
     }
     
     /// プレイリスト取得
     private func fetchPlaylist(from urlString: String) async throws -> M3U8Playlist {
+        logger.info("プレイリスト取得開始: \(urlString)")
+        
         guard let url = URL(string: urlString) else {
+            logger.error("無効なURL: \(urlString)")
             throw RecordingError.playlistFetchFailed
         }
         
-        // HTTPクライアントを直接使用してプレイリストを取得
-        let httpClient = HTTPClient()
-        let playlistData = try await httpClient.requestData(url, method: .get, headers: nil, body: nil)
+        // 認証情報を取得してヘッダーに追加
+        guard let authInfo = authService.currentAuthInfo else {
+            logger.error("認証情報が取得できません（プレイリスト取得時）")
+            throw RecordingError.authenticationError
+        }
+        
+        // Radiko API仕様書 3.2節に従って認証ヘッダーを設定
+        let headers = [
+            "X-Radiko-AuthToken": authInfo.authToken,
+            "X-Radiko-AreaId": authInfo.areaId,
+            "User-Agent": "curl/7.56.1",
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive"
+        ]
+        
+        logger.debug("認証ヘッダー設定: token=\(authInfo.authToken.prefix(10))..., area=\(authInfo.areaId)")
+        
+        // HTTPクライアントを使用してプレイリストを取得
+        let httpClient = RealHTTPClient()
+        let playlistData = try await httpClient.requestData(url, method: .get, headers: headers, body: nil)
         guard let playlistContent = String(data: playlistData, encoding: .utf8) else {
+            logger.error("プレイリストデータのデコードに失敗")
             throw RecordingError.playlistFetchFailed
         }
         
-        return try m3u8Parser.parse(playlistContent, baseURL: url)
+        logger.info("プレイリスト取得成功: \(playlistContent.count)文字")
+        logger.debug("プレイリスト内容（最初の200文字）: \(String(playlistContent.prefix(200)))")
+        
+        // マスタープレイリストかセグメントプレイリストかを判定
+        if playlistContent.contains("#EXT-X-STREAM-INF") {
+            // マスタープレイリスト: サブプレイリストURLを抽出
+            logger.info("マスタープレイリストを検出、サブプレイリストを取得")
+            let subPlaylistURL = try extractSubPlaylistURL(from: playlistContent, baseURL: url)
+            logger.info("サブプレイリストURL: \(subPlaylistURL)")
+            
+            // サブプレイリストを取得
+            guard let subURL = URL(string: subPlaylistURL) else {
+                logger.error("無効なサブプレイリストURL: \(subPlaylistURL)")
+                throw RecordingError.playlistFetchFailed
+            }
+            
+            let subPlaylistData = try await httpClient.requestData(subURL, method: .get, headers: headers, body: nil)
+            guard let subPlaylistContent = String(data: subPlaylistData, encoding: .utf8) else {
+                logger.error("サブプレイリストデータのデコードに失敗")
+                throw RecordingError.playlistFetchFailed
+            }
+            
+            logger.info("サブプレイリスト取得成功: \(subPlaylistContent.count)文字")
+            logger.debug("サブプレイリスト内容（最初の200文字）: \(String(subPlaylistContent.prefix(200)))")
+            
+            return try m3u8Parser.parse(subPlaylistContent, baseURL: subURL)
+        } else {
+            // セグメントプレイリスト: 直接解析
+            logger.info("セグメントプレイリストを直接解析")
+            return try m3u8Parser.parse(playlistContent, baseURL: url)
+        }
+    }
+    
+    /// マスタープレイリストからサブプレイリストURLを抽出
+    private func extractSubPlaylistURL(from content: String, baseURL: URL) throws -> String {
+        let lines = content.components(separatedBy: .newlines)
+        
+        for (index, line) in lines.enumerated() {
+            if line.contains("#EXT-X-STREAM-INF") {
+                // 次の行がプレイリストURL
+                if index + 1 < lines.count {
+                    let urlLine = lines[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !urlLine.hasPrefix("#") {
+                        // 相対URLの場合は絶対URLに変換
+                        if urlLine.hasPrefix("http") {
+                            return urlLine
+                        } else {
+                            return baseURL.deletingLastPathComponent().appendingPathComponent(urlLine).absoluteString
+                        }
+                    }
+                }
+            }
+        }
+        
+        logger.error("サブプレイリストURLが見つかりません")
+        throw RecordingError.playlistFetchFailed
     }
     
     /// セグメントダウンロード（メモリ効率改善版）
@@ -255,13 +399,25 @@ class RecordingManager: ObservableObject {
                                 settings: RecordingSettings,
                                 recordingId: String) async throws -> [SegmentDownloadResult] {
         
-        // メモリ効率のため、並行ダウンロードを使用し、結果ハンドラーで即座に処理
+        logger.info("セグメントダウンロード開始: \(playlist.segments.count)個")
+        
+        // 認証情報を取得してStreamingDownloaderに設定
+        guard let authInfo = authService.currentAuthInfo else {
+            logger.error("認証情報が取得できません（セグメントダウンロード時）")
+            throw RecordingError.authenticationError
+        }
+        
+        // StreamingDownloaderに認証ヘッダーを設定
+        streamingDownloader.setAuthHeaders(authToken: authInfo.authToken, areaId: authInfo.areaId)
+        logger.debug("StreamingDownloaderに認証ヘッダーを設定完了")
+        
+        // downloadSegmentsConcurrentlyメソッドを正しいシグネチャで呼び出し
         return try await streamingDownloader.downloadSegmentsConcurrently(
             playlist.segments,
             maxConcurrent: settings.maxConcurrentDownloads,
             resultHandler: { result in
-                // 各セグメント完了時に即座にメモリから解放される可能性を高める
-                // 将来的にはここでストリーミング書き込みを実装可能
+                // 各セグメント完了時のコールバック
+                logger.debug("セグメント完了: \(result.url) (\(result.data.count)バイト)")
             }
         )
     }

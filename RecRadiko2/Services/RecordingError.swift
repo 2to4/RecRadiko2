@@ -31,6 +31,9 @@ enum RecordingError: Error, LocalizedError, Equatable {
     case segmentCorrupted
     case downloadTimeout
     
+    // その他
+    case unknown(String)
+    
     var errorDescription: String? {
         switch self {
         // ネットワーク関連
@@ -68,6 +71,10 @@ enum RecordingError: Error, LocalizedError, Equatable {
             return "セグメントデータが破損しています"
         case .downloadTimeout:
             return "ダウンロードがタイムアウトしました"
+            
+        // その他
+        case .unknown(let message):
+            return "不明なエラー: \(message)"
         }
     }
     
@@ -102,6 +109,8 @@ enum RecordingError: Error, LocalizedError, Equatable {
             return true
         case let (.networkError(lhsError), .networkError(rhsError)):
             return (lhsError as NSError) == (rhsError as NSError)
+        case let (.unknown(lhsMessage), .unknown(rhsMessage)):
+            return lhsMessage == rhsMessage
         default:
             return false
         }

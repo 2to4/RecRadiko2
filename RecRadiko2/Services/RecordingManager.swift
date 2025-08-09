@@ -80,7 +80,7 @@ struct RecordingSettings {
          startTime: Date, 
          endTime: Date, 
          outputDirectory: URL, 
-         outputFormat: String = "aac",
+         outputFormat: String = "m4a",
          maxConcurrentDownloads: Int = 3,
          retryCount: Int = 3) {
         self.stationId = stationId
@@ -176,6 +176,31 @@ class RecordingManager: ObservableObject {
         logger.info("録音実行開始: ID=\(recordingId), 放送局=\(settings.stationId)")
         logger.debug("録音設定: 開始=\(settings.startTime), 終了=\(settings.endTime), 出力=\(settings.outputDirectory.path)")
         
+        // 録音時間の妥当性チェック
+        let currentTime = Date()
+        let timeDifference = settings.startTime.timeIntervalSince(currentTime)
+        logger.info("現在時刻: \(currentTime)")
+        logger.info("録音開始時刻: \(settings.startTime)")
+        logger.info("時間差: \(timeDifference)秒 (\(timeDifference/3600)時間)")
+        
+        // Radikoタイムフリー制限チェック（1週間以内）
+        let oneWeekAgo = currentTime.addingTimeInterval(-7 * 24 * 3600)
+        let oneDayFuture = currentTime.addingTimeInterval(24 * 3600)
+        
+        if settings.startTime < oneWeekAgo {
+            logger.error("録音エラー: 番組が古すぎます（1週間以上前）")
+            await updateProgress(recordingId: recordingId, state: .failed(RecordingError.invalidPlaylistFormat))
+            return
+        }
+        
+        if settings.startTime > oneDayFuture {
+            logger.error("録音エラー: 番組が未来すぎます（1日以上先）")
+            await updateProgress(recordingId: recordingId, state: .failed(RecordingError.invalidPlaylistFormat))
+            return
+        }
+        
+        logger.info("録音時間チェック完了: 有効な時間範囲内")
+        
         do {
             // 1. 認証
             logger.info("ステップ1: 認証開始")
@@ -197,8 +222,22 @@ class RecordingManager: ObservableObject {
             logger.info("ステップ3: プレイリスト取得開始")
             await updateProgress(recordingId: recordingId, state: .fetchingPlaylist)
             let playlistURL = try await buildPlaylistURL(settings: settings)
+            logger.info("プレイリストURL: \(playlistURL)")
+            
             let playlist = try await fetchPlaylist(from: playlistURL)
             logger.info("ステップ3: プレイリスト取得完了: \(playlist.segments.count)セグメント")
+            
+            // セグメント数の妥当性チェック
+            if playlist.segments.isEmpty {
+                logger.error("プレイリストにセグメントが含まれていません")
+                await updateProgress(recordingId: recordingId, state: .failed(RecordingError.noData))
+                return
+            }
+            
+            // セグメントURLの最初の数個をログ出力
+            for (index, segment) in playlist.segments.prefix(3).enumerated() {
+                logger.debug("セグメント\(index + 1): \(segment.url)")
+            }
             
             await updateProgress(recordingId: recordingId, 
                                state: .downloading,
@@ -211,6 +250,16 @@ class RecordingManager: ObservableObject {
                                                     settings: settings,
                                                     recordingId: recordingId)
             logger.info("ステップ4: セグメントダウンロード完了: \(segments.count)セグメント")
+            
+            // ダウンロードされたデータサイズを確認
+            let totalBytes = segments.reduce(0) { $0 + $1.data.count }
+            logger.info("ダウンロード総サイズ: \(totalBytes)バイト (\(totalBytes/1024/1024)MB)")
+            
+            if totalBytes == 0 {
+                logger.error("セグメントデータが空です")
+                await updateProgress(recordingId: recordingId, state: .failed(RecordingError.noData))
+                return
+            }
             
             // 5. ファイル保存
             logger.info("ステップ5: ファイル保存開始")
@@ -330,9 +379,34 @@ class RecordingManager: ObservableObject {
         
         // HTTPクライアントを使用してプレイリストを取得
         let httpClient = RealHTTPClient()
-        let playlistData = try await httpClient.requestData(url, method: .get, headers: headers, body: nil)
-        guard let playlistContent = String(data: playlistData, encoding: .utf8) else {
-            logger.error("プレイリストデータのデコードに失敗")
+        logger.debug("HTTPリクエスト開始: \(url)")
+        
+        let playlistData: Data
+        let playlistContent: String
+        
+        do {
+            playlistData = try await httpClient.requestData(url, method: .get, headers: headers, body: nil)
+            logger.info("HTTPレスポンス受信成功: \(playlistData.count)バイト")
+            
+            guard let content = String(data: playlistData, encoding: .utf8) else {
+                logger.error("プレイリストデータのデコードに失敗")
+                throw RecordingError.playlistFetchFailed
+            }
+            playlistContent = content
+            
+            // HTTPレスポンスのステータスコードをログ出力（可能であれば）
+            if playlistContent.contains("404") || playlistContent.contains("Not Found") {
+                logger.error("404エラーを含むレスポンス: \(String(playlistContent.prefix(200)))")
+                throw RecordingError.playlistFetchFailed
+            }
+            
+            if playlistContent.contains("error") || playlistContent.contains("Error") {
+                logger.error("エラーを含むレスポンス: \(String(playlistContent.prefix(200)))")
+                throw RecordingError.playlistFetchFailed
+            }
+        } catch {
+            logger.error("HTTPリクエスト失敗: \(error)")
+            logger.error("エラー詳細: \(error.localizedDescription)")
             throw RecordingError.playlistFetchFailed
         }
         
@@ -427,35 +501,99 @@ class RecordingManager: ObservableObject {
                              settings: RecordingSettings,
                              program: RadioProgram?) async throws {
         
+        logger.info("ファイル保存開始: セグメント数=\(segments.count)")
+        logger.debug("保存先ディレクトリ: \(settings.outputDirectory.path)")
+        
+        // セグメントが空の場合のチェック
+        guard !segments.isEmpty else {
+            logger.error("セグメントが空です。録音データがありません")
+            throw RecordingError.noData
+        }
+        
         // 1. 出力ディレクトリ作成
-        try fileManager.createDirectory(at: settings.outputDirectory, 
-                                      withIntermediateDirectories: true)
+        do {
+            try fileManager.createDirectory(at: settings.outputDirectory, 
+                                          withIntermediateDirectories: true)
+            logger.info("出力ディレクトリ作成成功: \(settings.outputDirectory.path)")
+        } catch {
+            logger.error("出力ディレクトリ作成失敗: \(error)")
+            throw RecordingError.saveFailed
+        }
         
         // 2. セグメントデータを結合
         var combinedData = Data()
-        for segment in segments {
+        for (index, segment) in segments.enumerated() {
+            logger.debug("セグメント\(index + 1)/\(segments.count)を結合中: \(segment.data.count)バイト")
             combinedData.append(segment.data)
         }
+        logger.info("セグメント結合完了: 合計\(combinedData.count)バイト")
         
         // 3. 容量チェック（予想サイズの1.2倍のマージンを確保）
         let requiredSpace = Int64(combinedData.count) * 12 / 10
-        try await checkAvailableSpace(at: settings.outputDirectory, required: requiredSpace)
+        logger.debug("必要容量: \(requiredSpace)バイト")
+        do {
+            try await checkAvailableSpace(at: settings.outputDirectory, required: requiredSpace)
+            logger.info("容量チェック成功")
+        } catch {
+            logger.error("容量チェック失敗: \(error)")
+            throw error
+        }
         
         // 4. ファイル名生成（重複回避）
-        let outputFile = try await generateUniqueFilename(
-            settings: settings, 
-            program: program
-        )
+        let outputFile: URL
+        do {
+            outputFile = try await generateUniqueFilename(
+                settings: settings, 
+                program: program
+            )
+            logger.info("出力ファイル名生成完了: \(outputFile.lastPathComponent)")
+            logger.debug("出力ファイルパス: \(outputFile.path)")
+        } catch {
+            logger.error("ファイル名生成失敗: \(error)")
+            throw error
+        }
         
         // 5. 一時ファイル書き込み
         let tempFile = outputFile.appendingPathExtension("tmp")
-        try combinedData.write(to: tempFile)
+        logger.debug("一時ファイルパス: \(tempFile.path)")
+        
+        do {
+            try combinedData.write(to: tempFile)
+            logger.info("一時ファイル書き込み成功: \(tempFile.lastPathComponent)")
+            
+            // ファイルサイズ確認
+            if let attributes = try? fileManager.attributesOfItem(atPath: tempFile.path),
+               let fileSize = attributes[.size] as? Int64 {
+                logger.info("書き込まれたファイルサイズ: \(fileSize)バイト")
+            }
+        } catch {
+            logger.error("一時ファイル書き込み失敗: \(error)")
+            logger.error("エラー詳細: \(error.localizedDescription)")
+            throw RecordingError.saveFailed
+        }
         
         // 6. メタデータ埋め込み（将来拡張用）
-        try await embedMetadata(tempFile: tempFile, outputFile: outputFile, program: program)
+        do {
+            try await embedMetadata(tempFile: tempFile, outputFile: outputFile, program: program)
+            logger.info("メタデータ埋め込み完了")
+        } catch {
+            logger.error("メタデータ埋め込み失敗: \(error)")
+            // 一時ファイル削除
+            try? fileManager.removeItem(at: tempFile)
+            throw RecordingError.saveFailed
+        }
         
-        // 7. 一時ファイル削除
-        try? fileManager.removeItem(at: tempFile)
+        // 7. 最終ファイル確認
+        if fileManager.fileExists(atPath: outputFile.path) {
+            logger.info("録音ファイル保存成功: \(outputFile.path)")
+            if let attributes = try? fileManager.attributesOfItem(atPath: outputFile.path),
+               let fileSize = attributes[.size] as? Int64 {
+                logger.info("最終ファイルサイズ: \(fileSize)バイト")
+            }
+        } else {
+            logger.error("録音ファイルが見つかりません: \(outputFile.path)")
+            throw RecordingError.saveFailed
+        }
     }
     
     /// 利用可能容量チェック
@@ -507,12 +645,24 @@ class RecordingManager: ObservableObject {
     
     /// メタデータ埋め込み（現在はファイル移動のみ、将来拡張用）
     private func embedMetadata(tempFile: URL, outputFile: URL, program: RadioProgram?) async throws {
+        logger.info("メタデータ埋め込み開始")
+        logger.debug("一時ファイル: \(tempFile.path)")
+        logger.debug("出力ファイル: \(outputFile.path)")
+        
         // 現在は単純なファイル移動
         // 将来的にはID3タグやメタデータ埋め込みを実装予定
-        try fileManager.moveItem(at: tempFile, to: outputFile)
+        do {
+            try fileManager.moveItem(at: tempFile, to: outputFile)
+            logger.info("ファイル移動成功: \(tempFile.lastPathComponent) -> \(outputFile.lastPathComponent)")
+        } catch {
+            logger.error("ファイル移動失敗: \(error)")
+            logger.error("エラー詳細: \(error.localizedDescription)")
+            throw error
+        }
         
         // メタデータ情報をログ出力（デバッグ用）
         if let program = program {
+            logger.info("録音完了: \(program.title) (\(program.stationId)) -> \(outputFile.lastPathComponent)")
             print("録音完了: \(program.title) (\(program.stationId)) -> \(outputFile.lastPathComponent)")
         }
     }

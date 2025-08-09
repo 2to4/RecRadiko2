@@ -15,6 +15,9 @@ struct ProgramScheduleView: View {
     @State private var selectedDate: Date = Date()
     @State private var showingRecordingProgress = false
     
+    // 設定から出力ディレクトリを取得
+    @AppStorage("saveDirectoryPath") private var saveDirectoryPath: String = "~/Desktop"
+    
     var body: some View {
         VStack(spacing: 0) {
             // ヘッダー
@@ -80,11 +83,20 @@ struct ProgramScheduleView: View {
         
         Task {
             do {
-                // 出力ディレクトリ（デフォルトはDocuments/RecRadiko2）
-                let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-                let outputDirectory = documentsPath.appendingPathComponent("RecRadiko2")
+                // 設定画面で指定したディレクトリを使用
+                let expandedPath = saveDirectoryPath.replacingOccurrences(of: "~", with: FileManager.default.homeDirectoryForCurrentUser.path)
+                let outputDirectory = URL(fileURLWithPath: expandedPath)
                 
-                print("📁 [ProgramScheduleView] 出力ディレクトリ: \(outputDirectory.path)")
+                print("📁 [ProgramScheduleView] 設定された出力ディレクトリ: \(outputDirectory.path)")
+                print("📁 [ProgramScheduleView] 設定値: \(saveDirectoryPath)")
+                
+                // ディレクトリの存在チェックと作成
+                var isDirectory: ObjCBool = false
+                if !FileManager.default.fileExists(atPath: outputDirectory.path, isDirectory: &isDirectory) || !isDirectory.boolValue {
+                    throw RecordingError.saveFailed
+                }
+                
+                print("✅ [ProgramScheduleView] 出力ディレクトリ確認成功")
                 
                 let settings = RecordingSettings(
                     stationId: station.id,

@@ -95,7 +95,7 @@ class M3U8Parser {
                 isEndList = true
             } else if lineString.hasPrefix("#EXT-X-ALLOW-CACHE:") {
                 allowCache = extractBoolValue(from: lineString, prefix: "#EXT-X-ALLOW-CACHE:")
-            } else if !lineString.hasPrefix("#") && lineString.contains(".aac") {
+            } else if !lineString.hasPrefix("#") && lineString.contains(".aac") || lineString.contains(".m4a") {
                 // セグメントURL
                 if let duration = currentDuration {
                     let resolvedURL = resolveURL(lineString, baseURL: baseURL)

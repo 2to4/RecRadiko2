@@ -46,7 +46,12 @@ public enum LogLevel: Int, CaseIterable, Comparable {
 public final class AppLogger {
     
     // MARK: - Singleton
-    public static let shared = AppLogger()
+    public static let shared: AppLogger = {
+        print("🔥 [AppLogger] Singleton 強制初期化開始")
+        let instance = AppLogger()
+        print("🔥 [AppLogger] Singleton 強制初期化完了")
+        return instance
+    }()
     
     // MARK: - Properties
     private let isDebugBuild: Bool
@@ -69,6 +74,14 @@ public final class AppLogger {
     // MARK: - Initialization
     private init() {
         print("🚀 [AppLogger] 初期化開始")
+        print("🚀 [AppLogger] 初期化スレッド: \(Thread.current)")
+        
+        // iOS/macOSシミュレーター検出
+        #if targetEnvironment(simulator)
+        print("📱 [AppLogger] シミュレーター環境で実行")
+        #else
+        print("💻 [AppLogger] 実機環境で実行")
+        #endif
         
         // デバッグビルド判定
         #if DEBUG
@@ -92,27 +105,54 @@ public final class AppLogger {
         
         // ログディレクトリ初期化（アプリサンドボックス対応）
         do {
+            print("📁 [AppLogger] Application Supportディレクトリ取得開始")
             // Application Support ディレクトリを取得
             let appSupportURL = try fileManager.url(for: .applicationSupportDirectory,
                                                    in: .userDomainMask,
                                                    appropriateFor: nil,
                                                    create: true)
+            print("📁 [AppLogger] Application Supportパス: \(appSupportURL.path)")
+            
             // アプリ専用ディレクトリ作成
             logDirectory = appSupportURL.appendingPathComponent("RecRadiko2").appendingPathComponent("logs")
             print("📁 [AppLogger] ログディレクトリ: \(logDirectory.path)")
+            
+            // ディレクトリ権限チェック
+            let attributes = try fileManager.attributesOfItem(atPath: appSupportURL.path)
+            print("🔐 [AppLogger] Application Support権限: \(attributes)")
         } catch {
-            // フォールバック：一時ディレクトリを使用
-            let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            logDirectory = tempDir.appendingPathComponent("RecRadiko2-logs")
-            print("⚠️ [AppLogger] Application Supportディレクトリ取得失敗、一時ディレクトリを使用: \(logDirectory.path)")
-            print("⚠️ [AppLogger] エラー: \(error)")
+            print("❌ [AppLogger] Application Supportディレクトリ取得失敗: \(error)")
+            print("❌ [AppLogger] エラータイプ: \(type(of: error))")
+            print("❌ [AppLogger] エラー詳細: \(error.localizedDescription)")
+            
+            // フォールバック1: Documentsディレクトリを使用
+            do {
+                let documentsURL = try fileManager.url(for: .documentDirectory,
+                                                       in: .userDomainMask,
+                                                       appropriateFor: nil,
+                                                       create: true)
+                logDirectory = documentsURL.appendingPathComponent("RecRadiko2-logs")
+                print("📁 [AppLogger] フォールバック1: Documentsディレクトリを使用: \(logDirectory.path)")
+            } catch {
+                // フォールバック2: 一時ディレクトリを使用
+                let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+                logDirectory = tempDir.appendingPathComponent("RecRadiko2-logs")
+                print("⚠️ [AppLogger] フォールバック2: 一時ディレクトリを使用: \(logDirectory.path)")
+            }
         }
         
         // 初期化処理
+        print("🛠️ [AppLogger] ディレクトリ初期化開始")
         initializeLogDirectory()
+        
+        print("🛠️ [AppLogger] ログファイル設定開始")
         setupCurrentLogFile()
         
-        print("✅ [AppLogger] 初期化完了")
+        print("✅ [AppLogger] 初期化完了・ログディレクトリ: \(logDirectory.path)")
+        print("✅ [AppLogger] 初期化完了・ログファイル: \(currentLogFile?.path ?? "nil")")
+        
+        // テストログ出力
+        log(.info, message: "AppLogger初期化テスト", category: "System", file: #file, function: #function, line: #line)
         
         // アプリ終了時のクリーンアップ
         NotificationCenter.default.addObserver(
@@ -194,11 +234,30 @@ public final class AppLogger {
     
     private func initializeLogDirectory() {
         print("📁 [AppLogger] ログディレクトリ作成開始: \(logDirectory.path)")
+        
+        // 親ディレクトリの存在確認
+        let parentDirectory = logDirectory.deletingLastPathComponent()
+        print("📁 [AppLogger] 親ディレクトリ: \(parentDirectory.path)")
+        print("📁 [AppLogger] 親ディレクトリ存在: \(fileManager.fileExists(atPath: parentDirectory.path))")
+        
         do {
             try fileManager.createDirectory(at: logDirectory, withIntermediateDirectories: true)
             print("✅ [AppLogger] ログディレクトリ作成成功")
+            
+            // 作成後の確認
+            print("🔍 [AppLogger] ディレクトリ存在確認: \(fileManager.fileExists(atPath: logDirectory.path))")
+            
+            // 権限確認
+            if let attributes = try? fileManager.attributesOfItem(atPath: logDirectory.path) {
+                print("🔐 [AppLogger] ディレクトリ権限: \(attributes[.posixPermissions] ?? "unknown")")
+            }
         } catch {
             print("❌ [AppLogger] ログディレクトリ作成失敗: \(error)")
+            print("❌ [AppLogger] エラータイプ: \(type(of: error))")
+            if let nsError = error as NSError? {
+                print("❌ [AppLogger] NSErrorコード: \(nsError.code)")
+                print("❌ [AppLogger] NSErrorドメイン: \(nsError.domain)")
+            }
         }
     }
     

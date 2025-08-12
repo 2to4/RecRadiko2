@@ -9,6 +9,13 @@ RecRadiko2は、Radiko（日本のインターネットラジオサービス）�
 - **UIフレームワーク**: SwiftUI
 - **プラットフォーム**: macOS 15.5以上
 - **IDE**: Xcode 16.4
+- **録音形式**: MP3直接保存（再エンコーディングなし・高品質保持）
+
+### 🎵 **録音機能アーキテクチャ**
+- **ID3MediaParser**: RadikoストリームのID3タグ付きMP3解析
+- **TSParser**: 将来のTS形式ストリーム対応（ADTS AAC抽出）
+- **RecordingManager**: 統合録音管理・MP3直接保存
+- **音質最適化**: 再エンコーディング廃止によるロスレス録音実現
 
 ## 🚨 **開発ルール**
 
@@ -76,9 +83,20 @@ RecRadiko2/
 ├── RecRadiko2/                # メインアプリケーションソース
 │   ├── RecRadiko2App.swift    # @mainアプリエントリーポイント
 │   ├── ContentView.swift      # メインUI画面
+│   ├── Services/              # 核心ビジネスロジック
+│   │   ├── ID3MediaParser.swift    # ID3タグ付きMP3解析
+│   │   ├── TSParser.swift          # TSストリーム・ADTS AAC解析
+│   │   ├── RecordingManager.swift  # 録音統合管理
+│   │   ├── AppLogger.swift         # 高性能ログシステム
+│   │   └── FolderAccessManager.swift # ファイルアクセス管理
+│   ├── ViewModels/            # SwiftUI ViewModel層
+│   ├── Views/                 # SwiftUI View層
 │   ├── Assets.xcassets/       # 画像、カラー、アプリアイコン
 │   └── RecRadiko2.entitlements # アプリサンドボックス権限
 ├── RecRadiko2Tests/           # ユニットテスト（Swift Testingフレームワーク）
+│   ├── ID3MediaParserTests.swift   # ID3解析包括テスト
+│   ├── TSParserTests.swift         # TSストリーム解析テスト
+│   └── [既存テストファイル群]
 └── RecRadiko2UITests/         # UIテスト（XCTestフレームワーク）
 ```
 
@@ -141,3 +159,24 @@ RecRadiko2/
 2. **型安全**: Optional型・エラーハンドリングを適切に実装
 3. **リファクタリング**: エラー修正時はコード品質も同時に改善
 4. **テスト実行**: コンパイルエラー修正後は全テスト実行で回帰確認
+
+## 📊 **最新技術状況**
+
+### 録音機能実装状況
+- ✅ **ID3MediaParser**: RadikoのID3タグ付きMP3ストリーム完全対応
+- ✅ **MP3直接保存**: 再エンコーディング廃止による高品質録音実現
+- ✅ **TSParser**: 将来のTS形式ストリーム対応（ADTS AAC抽出）
+- ✅ **統合テスト**: ID3解析・TSストリーム処理の包括テストカバレッジ
+- ❌ **M4AEncoder**: 未使用機能として完全削除済み
+
+### 品質保証状況
+- **テストカバレッジ**: 核心音声処理機能の包括テスト完備
+- **TDDリファクタリング**: t_wada手法による安全なコード改善実施済み
+- **デッドコード除去**: 763行の未使用コード削除完了
+- **音質保証**: MP3直接保存によるロスレス録音品質確保
+
+### 次期開発推奨事項
+1. **UIテスト拡充**: 録音機能のエンドツーエンドテスト強化
+2. **エラー処理向上**: ネットワーク・ストリーム異常時の回復性改善
+3. **パフォーマンス最適化**: 大容量録音時のメモリ効率向上
+4. **ログ分析機能**: AppLoggerの出力を活用した診断機能追加

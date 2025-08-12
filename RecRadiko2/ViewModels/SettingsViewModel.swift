@@ -13,7 +13,7 @@ import SwiftUI
 final class SettingsViewModel: BaseViewModel {
     // MARK: - AppStorage Properties
     /// 保存先ディレクトリパス
-    @AppStorage("saveDirectoryPath") var saveDirectoryPath: String = "~/Desktop" {
+    @AppStorage("saveDirectoryPath") var saveDirectoryPath: String = "~/Downloads" {
         didSet {
             validateSaveDirectory()
         }
@@ -64,7 +64,7 @@ final class SettingsViewModel: BaseViewModel {
     private func setupInitialValues() {
         if isFirstLaunch {
             // 初回起動時のデフォルト設定
-            saveDirectoryPath = "~/Desktop"
+            saveDirectoryPath = "~/Downloads"
             selectedAreaId = "JP13" // 東京
             isFirstLaunch = false
         }
@@ -138,12 +138,25 @@ final class SettingsViewModel: BaseViewModel {
     
     /// 設定をリセット
     func resetSettings() {
-        saveDirectoryPath = "~/Desktop"
+        saveDirectoryPath = "~/Downloads"
         premiumEmail = ""
         premiumPassword = ""
         selectedAreaId = "JP13"
         
         clearError()
+        validateSaveDirectory()
+    }
+    
+    /// URL指定でディレクトリを更新
+    /// - Parameter url: 選択されたディレクトリURL
+    func updateSaveDirectoryFromURL(_ url: URL) {
+        saveDirectoryPath = url.path
+        validateSaveDirectory()
+    }
+    
+    /// Downloadsフォルダにリセット
+    func resetToDownloadsFolder() {
+        saveDirectoryPath = "~/Downloads"
         validateSaveDirectory()
     }
     

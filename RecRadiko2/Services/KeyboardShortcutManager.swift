@@ -95,13 +95,14 @@ enum ShortcutAction: String, CaseIterable, Codable {
 
 /// キーボードショートカット設定
 struct KeyboardShortcut: Codable, Identifiable {
-    let id = UUID()
+    let id: UUID
     let action: ShortcutAction
     var keyEquivalent: String
     var modifiers: [String]
     var isEnabled: Bool = true
     
     init(action: ShortcutAction, keyEquivalent: String? = nil, modifiers: [String]? = nil) {
+        self.id = UUID()
         self.action = action
         self.keyEquivalent = keyEquivalent ?? String(action.defaultKeyEquivalent.character)
         self.modifiers = modifiers ?? action.defaultModifiers.stringArray

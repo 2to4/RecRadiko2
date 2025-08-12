@@ -11,6 +11,7 @@ import SwiftUI
 struct SettingsView: View {
     // MARK: - ViewModel
     @StateObject private var viewModel = SettingsViewModel()
+    @StateObject private var folderAccessManager = FolderAccessManager()
     
     // MARK: - Body
     var body: some View {
@@ -30,17 +31,6 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.appSecondaryBackground)
         .frame(minWidth: 800, minHeight: 600)
-        .fileImporter(
-            isPresented: $viewModel.showingDirectoryPicker,
-            allowedContentTypes: [.folder]
-        ) { result in
-            switch result {
-            case .success(let url):
-                viewModel.updateSaveDirectory(url)
-            case .failure(let error):
-                viewModel.showError("フォルダの選択に失敗しました: \(error.localizedDescription)")
-            }
-        }
         .alert("エラー", isPresented: .constant(viewModel.errorMessage != nil)) {
             Button("OK") {
                 viewModel.clearError()
@@ -49,6 +39,27 @@ struct SettingsView: View {
             if let errorMessage = viewModel.errorMessage {
                 Text(errorMessage)
             }
+        }
+        .onAppear {
+            checkBookmarkedFolder()
+        }
+    }
+    
+    // MARK: - フォルダ選択処理
+    /// 保存されたブックマークフォルダを確認
+    private func checkBookmarkedFolder() {
+        if let bookmarkedURL = folderAccessManager.getAvailableFolder() {
+            viewModel.updateSaveDirectoryFromURL(bookmarkedURL)
+        }
+    }
+    
+    /// フォルダ選択とブックマーク
+    private func selectAndBookmarkFolder() {
+        if let selectedURL = folderAccessManager.selectAndBookmarkFolder() {
+            viewModel.updateSaveDirectoryFromURL(selectedURL)
+            print("✅ [SettingsView] フォルダ選択・ブックマーク完了: \(selectedURL.path)")
+        } else {
+            viewModel.showError("フォルダの選択に失敗しました")
         }
     }
     
@@ -60,9 +71,13 @@ struct SettingsView: View {
                 .font(.appHeadline)
                 .foregroundColor(.appPrimaryText)
             
+            Text("※ macOSセキュリティのため、フォルダ選択後に永続的なアクセス権限を取得します")
+                .font(.appCaption)
+                .foregroundColor(.appSecondaryText)
+            
             HStack(spacing: 16) {
                 Button("変更") {
-                    viewModel.selectSaveDirectory()
+                    selectAndBookmarkFolder()
                 }
                 .buttonStyle(SecondaryButtonStyle())
                 .accessibilityLabel("保存先フォルダを変更")
@@ -72,13 +87,30 @@ struct SettingsView: View {
                         .font(.appBody)
                         .foregroundColor(viewModel.isDirectoryValid ? .appPrimaryText : .appDanger)
                     
-                    if !viewModel.isDirectoryValid {
+                    if folderAccessManager.needsFolderSelection() {
+                        Text("⚠️ フォルダを選択してください")
+                            .font(.appCaption)
+                            .foregroundColor(.appWarning)
+                    } else if !viewModel.isDirectoryValid {
                         Text("⚠️ ディレクトリが存在しません")
                             .font(.appCaption)
                             .foregroundColor(.appDanger)
+                    } else {
+                        Text("✅ アクセス権限取得済み")
+                            .font(.appCaption)
+                            .foregroundColor(.appAccent)
                     }
                 }
             }
+            
+            // ブックマーククリアボタン（デバッグ用）
+            Button("ブックマークをクリア") {
+                folderAccessManager.clearBookmark()
+                viewModel.resetToDownloadsFolder()
+            }
+            .buttonStyle(SecondaryButtonStyle())
+            .foregroundColor(.appDanger)
+            .font(.appCaption)
         }
     }
     

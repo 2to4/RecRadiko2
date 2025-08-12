@@ -51,7 +51,7 @@ struct ProgramRow: View {
     /// 時刻表示
     private var timeDisplay: some View {
         Text(program.displayTime)
-            .font(.appMonospaced)
+            .font(.appMonospacedRegular)
             .foregroundColor(.appSecondaryText)
             .frame(width: 50, alignment: .leading)
             .accessibilityHidden(true) // 親のアクセシビリティラベルで対応

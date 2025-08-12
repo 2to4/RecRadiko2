@@ -261,7 +261,7 @@ public final class AppLogger {
         }
     }
     
-    private func setupCurrentLogFile() {
+    private func setupCurrentLogFile(isRotating: Bool = false) {
         let today = dateFormatter.string(from: Date())
         let fileName = "RecRadiko2_\(today).log"
         currentLogFile = logDirectory.appendingPathComponent(fileName)
@@ -275,18 +275,54 @@ public final class AppLogger {
         
         print("📝 [AppLogger] ログファイルパス: \(logFile.path)")
         
-        // 既存ファイルのサイズチェック
-        if fileManager.fileExists(atPath: logFile.path) {
-            print("📄 [AppLogger] 既存ログファイル検出")
+        // 既存ファイルのサイズチェック（ローテーション中はスキップ）
+        if fileManager.fileExists(atPath: logFile.path) && !isRotating {
+            print("📄 [AppLogger] 既存ログファイル検出: \(logFile.path)")
             do {
-                let attributes = try fileManager.attributesOfItem(atPath: logFile.path)
-                if let fileSize = attributes[.size] as? Int, fileSize > maxLogFileSize {
-                    print("📄 [AppLogger] ファイルサイズ超過、ローテーション実行")
-                    rotateLogFile()
+                // ファイルが存在するか再度確認
+                guard fileManager.fileExists(atPath: logFile.path) else {
+                    print("⚠️ [AppLogger] ファイルが存在しません")
+                    openLogFile()
                     return
                 }
-            } catch {
-                print("❌ [AppLogger] ファイルサイズ取得失敗: \(error)")
+                
+                // ファイル属性を安全に取得
+                let attributes = try fileManager.attributesOfItem(atPath: logFile.path)
+                print("📊 [AppLogger] ファイル属性取得成功")
+                
+                // ファイルサイズチェック
+                if let fileSize = attributes[.size] as? NSNumber {
+                    let size = fileSize.intValue
+                    print("📊 [AppLogger] ファイルサイズ: \(size) bytes (最大: \(maxLogFileSize) bytes)")
+                    if size > maxLogFileSize {
+                        print("📄 [AppLogger] ファイルサイズ超過、ローテーション実行")
+                        rotateLogFile()
+                        return
+                    }
+                } else {
+                    print("⚠️ [AppLogger] ファイルサイズ取得不可")
+                }
+            } catch let error as NSError {
+                print("❌ [AppLogger] ファイル属性取得失敗")
+                print("❌ [AppLogger] エラーコード: \(error.code)")
+                print("❌ [AppLogger] エラードメイン: \(error.domain)")
+                print("❌ [AppLogger] エラー詳細: \(error.localizedDescription)")
+                
+                // エラーコード詳細調査
+                if error.domain == NSCocoaErrorDomain {
+                    switch error.code {
+                    case NSFileNoSuchFileError:
+                        print("❌ [AppLogger] ファイルが存在しません")
+                    case NSFileReadNoPermissionError:
+                        print("❌ [AppLogger] ファイル読み取り権限がありません")
+                    default:
+                        print("❌ [AppLogger] その他のファイルエラー: \(error.code)")
+                    }
+                }
+                
+                // エラー時は新規ファイルとして扱う
+                openLogFile()
+                return
             }
         } else {
             print("📝 [AppLogger] 新規ログファイル作成")
@@ -375,9 +411,31 @@ public final class AppLogger {
     }
     
     private func rotateLogFile() {
+        print("🔄 [AppLogger] ログファイルローテーション開始")
+        
+        // 現在のファイルをクローズ
         closeLogFile()
+        
+        // 現在のファイルをリネーム（タイムスタンプ付き）
+        if let currentFile = currentLogFile {
+            let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+                .replacingOccurrences(of: ":", with: "-")
+            let rotatedFileName = currentFile.deletingPathExtension().lastPathComponent + "_\(timestamp).log"
+            let rotatedFile = logDirectory.appendingPathComponent(rotatedFileName)
+            
+            do {
+                try fileManager.moveItem(at: currentFile, to: rotatedFile)
+                print("📄 [AppLogger] ログファイルをローテーション: \(rotatedFileName)")
+            } catch {
+                print("❌ [AppLogger] ログファイルローテーション失敗: \(error)")
+            }
+        }
+        
+        // 古いログファイルをクリーンアップ
         cleanupOldLogFiles()
-        setupCurrentLogFile()
+        
+        // 新しいログファイルを作成（ローテーションフラグ付き）
+        setupCurrentLogFile(isRotating: true)
     }
     
     private func closeLogFile() {

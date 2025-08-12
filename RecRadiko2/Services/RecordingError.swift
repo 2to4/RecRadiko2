@@ -31,6 +31,7 @@ enum RecordingError: Error, LocalizedError, Equatable {
     case segmentCorrupted
     case downloadTimeout
     case noData
+    case audioProcessingFailed
     
     // その他
     case unknown(String)
@@ -74,6 +75,8 @@ enum RecordingError: Error, LocalizedError, Equatable {
             return "ダウンロードがタイムアウトしました"
         case .noData:
             return "録音データがありません"
+        case .audioProcessingFailed:
+            return "音声データの処理に失敗しました"
             
         // その他
         case .unknown(let message):
@@ -109,7 +112,8 @@ enum RecordingError: Error, LocalizedError, Equatable {
              (.streamingFailed, .streamingFailed),
              (.segmentCorrupted, .segmentCorrupted),
              (.downloadTimeout, .downloadTimeout),
-             (.noData, .noData):
+             (.noData, .noData),
+             (.audioProcessingFailed, .audioProcessingFailed):
             return true
         case let (.networkError(lhsError), .networkError(rhsError)):
             return (lhsError as NSError) == (rhsError as NSError)

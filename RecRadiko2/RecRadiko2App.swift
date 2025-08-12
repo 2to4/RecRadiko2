@@ -46,6 +46,54 @@ struct RecRadiko2App: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .frame(minWidth: 900, idealWidth: 1200, maxWidth: .infinity,
+                       minHeight: 600, idealHeight: 800, maxHeight: .infinity)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unified(showsTitle: true))
+        .commands {
+            // ファイルメニューのカスタマイズ
+            CommandGroup(replacing: .newItem) {
+                Button("新規録音") {
+                    NotificationCenter.default.post(name: .newRecording, object: nil)
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
+            
+            // 表示メニューの追加
+            CommandMenu("表示") {
+                Button("放送局一覧") {
+                    NotificationCenter.default.post(name: .showStationList, object: nil)
+                }
+                .keyboardShortcut("1", modifiers: .command)
+                
+                Button("番組表") {
+                    NotificationCenter.default.post(name: .showProgramSchedule, object: nil)
+                }
+                .keyboardShortcut("2", modifiers: .command)
+                
+                Button("設定") {
+                    NotificationCenter.default.post(name: .showSettings, object: nil)
+                }
+                .keyboardShortcut(",", modifiers: .command)
+                
+                Divider()
+                
+                Button("フルスクリーン") {
+                    NSApplication.shared.keyWindow?.toggleFullScreen(nil)
+                }
+                .keyboardShortcut("f", modifiers: [.command, .control])
+            }
+            
+            // ウィンドウメニューのカスタマイズ
+            CommandGroup(after: .windowSize) {
+                Button("ウィンドウを中央に配置") {
+                    if let window = NSApplication.shared.keyWindow {
+                        window.center()
+                    }
+                }
+                .keyboardShortcut("c", modifiers: [.command, .option])
+            }
         }
     }
 }

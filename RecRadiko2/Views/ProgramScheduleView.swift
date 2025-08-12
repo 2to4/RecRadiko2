@@ -15,8 +15,8 @@ struct ProgramScheduleView: View {
     @State private var selectedDate: Date = Date()
     @State private var showingRecordingProgress = false
     
-    // 設定から出力ディレクトリを取得
-    @AppStorage("saveDirectoryPath") private var saveDirectoryPath: String = "~/Desktop"
+    // フォルダアクセス管理
+    @StateObject private var folderAccessManager = FolderAccessManager()
     
     var body: some View {
         VStack(spacing: 0) {
@@ -83,20 +83,42 @@ struct ProgramScheduleView: View {
         
         Task {
             do {
-                // 設定画面で指定したディレクトリを使用
-                let expandedPath = saveDirectoryPath.replacingOccurrences(of: "~", with: FileManager.default.homeDirectoryForCurrentUser.path)
-                let outputDirectory = URL(fileURLWithPath: expandedPath)
-                
-                print("📁 [ProgramScheduleView] 設定された出力ディレクトリ: \(outputDirectory.path)")
-                print("📁 [ProgramScheduleView] 設定値: \(saveDirectoryPath)")
-                
-                // ディレクトリの存在チェックと作成
-                var isDirectory: ObjCBool = false
-                if !FileManager.default.fileExists(atPath: outputDirectory.path, isDirectory: &isDirectory) || !isDirectory.boolValue {
+                // FolderAccessManagerから適切なフォルダを取得
+                guard let outputDirectory = folderAccessManager.getAvailableFolder() else {
+                    print("❌ [ProgramScheduleView] 録音エラー: 出力ディレクトリの取得に失敗")
                     throw RecordingError.saveFailed
                 }
                 
-                print("✅ [ProgramScheduleView] 出力ディレクトリ確認成功")
+                print("📁 [ProgramScheduleView] 使用する出力ディレクトリ: \(outputDirectory.path)")
+                
+                // ディレクトリの存在チェックと作成
+                var isDirectory: ObjCBool = false
+                let directoryExists = FileManager.default.fileExists(atPath: outputDirectory.path, isDirectory: &isDirectory)
+                let isValidDirectory = isDirectory.boolValue
+                
+                print("🔍 [ProgramScheduleView] ディレクトリ状態チェック:")
+                print("  - パス: \(outputDirectory.path)")
+                print("  - 存在: \(directoryExists)")
+                print("  - ディレクトリ: \(isValidDirectory)")
+                
+                if !directoryExists {
+                    print("📁 [ProgramScheduleView] ディレクトリを作成中...")
+                    do {
+                        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+                        print("✅ [ProgramScheduleView] ディレクトリ作成成功: \(outputDirectory.path)")
+                    } catch {
+                        print("❌ [ProgramScheduleView] ディレクトリ作成失敗: \(error)")
+                        // セキュリティスコープアクセスを適切に終了
+                        folderAccessManager.stopAccessingFolder(outputDirectory)
+                        throw RecordingError.saveFailed
+                    }
+                } else if !isValidDirectory {
+                    print("❌ [ProgramScheduleView] パスがディレクトリではありません")
+                    folderAccessManager.stopAccessingFolder(outputDirectory)
+                    throw RecordingError.saveFailed
+                }
+                
+                print("✅ [ProgramScheduleView] 出力ディレクトリ確認成功（セキュリティスコープアクセス有効）")
                 
                 let settings = RecordingSettings(
                     stationId: station.id,
@@ -108,6 +130,9 @@ struct ProgramScheduleView: View {
                 showingRecordingProgress = true
                 let recordingId = try await recordingManager.startRecording(with: settings)
                 print("✅ [ProgramScheduleView] 録音開始成功: ID=\(recordingId)")
+                
+                // 録音完了まで、セキュリティスコープアクセスを維持
+                // （RecordingManagerが録音完了時にstopAccessingSecurityScopedResourceを呼ぶ）
                 
             } catch {
                 print("❌ [ProgramScheduleView] 録音開始エラー: \(error)")
@@ -181,7 +206,7 @@ struct ProgramScheduleView: View {
                     if index > 0 {
                         let previousProgram = viewModel.programs[index - 1]
                         let gap = program.startTime.timeIntervalSince(previousProgram.endTime)
-                        let gapMinutes = Int(gap / 60)
+                        let _ = Int(gap / 60)
                         
                         // 2分以上の空白のみ表示（微細な時間差は無視）
                         if gap > 120 { // 120秒 = 2分

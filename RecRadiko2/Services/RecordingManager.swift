@@ -9,6 +9,27 @@ import Foundation
 
 private let logger = AppLogger.shared.category("RecordingManager")
 
+/// 進捗カウンター（並行アクセス安全）
+@MainActor
+class ProgressCounter {
+    private var count = 0
+    
+    func increment() -> Int {
+        count += 1
+        return count
+    }
+    
+    func reset() {
+        count = 0
+    }
+}
+
+/// セグメント処理モード
+enum ProcessingMode {
+    case tsStream    // TSパケット形式
+    case id3Media    // ID3タグ付きメディア形式
+    case unknown     // 不明
+}
 
 /// 録音状態
 enum RecordingState: Equatable {
@@ -80,7 +101,7 @@ struct RecordingSettings {
          startTime: Date, 
          endTime: Date, 
          outputDirectory: URL, 
-         outputFormat: String = "m4a",
+         outputFormat: String = "mp3",
          maxConcurrentDownloads: Int = 3,
          retryCount: Int = 3) {
         self.stationId = stationId
@@ -107,6 +128,10 @@ class RecordingManager: ObservableObject {
     private let m3u8Parser: M3U8Parser
     private let streamingDownloader: StreamingDownloader
     private let fileManager: FileManager
+    private let tsParser: TSParser
+    private let id3Parser: ID3MediaParser
+    private let folderAccessManager: FolderAccessManager
+
     
     // MARK: - Initialization
     
@@ -123,6 +148,9 @@ class RecordingManager: ObservableObject {
         self.m3u8Parser = m3u8Parser
         self.streamingDownloader = streamingDownloader
         self.fileManager = fileManager
+        self.tsParser = TSParser()
+        self.id3Parser = ID3MediaParser()
+        self.folderAccessManager = FolderAccessManager()
         
         print("✅ [RecordingManager] 初期化完了")
     }
@@ -264,9 +292,14 @@ class RecordingManager: ObservableObject {
             // 5. ファイル保存
             logger.info("ステップ5: ファイル保存開始")
             await updateProgress(recordingId: recordingId, state: .saving)
-            try await saveRecording(segments: segments, 
-                                  settings: settings, 
-                                  program: program)
+            
+            // ファイル保存をバックグラウンドスレッドで実行
+            try await Task.detached {
+                try await self.saveRecording(segments: segments, 
+                                           settings: settings, 
+                                           program: program)
+            }.value
+            
             logger.info("ステップ5: ファイル保存完了")
             
             // 6. 完了
@@ -485,6 +518,10 @@ class RecordingManager: ObservableObject {
         streamingDownloader.setAuthHeaders(authToken: authInfo.authToken, areaId: authInfo.areaId)
         logger.debug("StreamingDownloaderに認証ヘッダーを設定完了")
         
+        // 進捗管理用のアクター
+        let totalSegments = playlist.segments.count
+        let progressCounter = ProgressCounter()
+        
         // downloadSegmentsConcurrentlyメソッドを正しいシグネチャで呼び出し
         return try await streamingDownloader.downloadSegmentsConcurrently(
             playlist.segments,
@@ -492,6 +529,17 @@ class RecordingManager: ObservableObject {
             resultHandler: { result in
                 // 各セグメント完了時のコールバック
                 logger.debug("セグメント完了: \(result.url) (\(result.data.count)バイト)")
+                
+                // 進捗更新（メインスレッドで実行）
+                Task { @MainActor in
+                    let completedCount = progressCounter.increment()
+                    await self.updateProgress(
+                        recordingId: recordingId,
+                        downloadedSegments: completedCount,
+                        totalSegments: totalSegments
+                    )
+                    logger.debug("進捗更新: \(completedCount)/\(totalSegments) (\(Int(Double(completedCount)/Double(totalSegments) * 100))%)")
+                }
             }
         )
     }
@@ -504,37 +552,211 @@ class RecordingManager: ObservableObject {
         logger.info("ファイル保存開始: セグメント数=\(segments.count)")
         logger.debug("保存先ディレクトリ: \(settings.outputDirectory.path)")
         
+        // 0. 保存先ディレクトリの事前検証とアクセス権限取得
+        logger.info("保存先ディレクトリ検証開始")
+        
+        // 保存先URLの準備（フォルダ選択が必要な場合は選択ダイアログを表示）
+        var actualOutputDirectory = settings.outputDirectory
+        var needsFolderSelection = false
+        
+        // まず既存の設定でアクセス可能か確認
+        let parentDir = settings.outputDirectory.deletingLastPathComponent()
+        logger.debug("親ディレクトリ: \(parentDir.path)")
+        
+        // セキュリティスコープアクセス開始を試行
+        var isAccessingSecurityScope = settings.outputDirectory.startAccessingSecurityScopedResource()
+        logger.info("初回セキュリティスコープアクセス試行: \(isAccessingSecurityScope)")
+        
+        // 書き込み権限確認
+        if !fileManager.isWritableFile(atPath: parentDir.path) {
+            logger.warning("親ディレクトリへの書き込み権限がありません: \(parentDir.path)")
+            
+            // セキュリティスコープアクセス終了
+            if isAccessingSecurityScope {
+                settings.outputDirectory.stopAccessingSecurityScopedResource()
+            }
+            
+            // 保存されたブックマークから復元を試行
+            logger.info("保存されたブックマークから復元を試行")
+            if let restoredURL = folderAccessManager.restoreBookmarkedFolder() {
+                actualOutputDirectory = restoredURL
+                isAccessingSecurityScope = true
+                logger.info("ブックマークから復元成功: \(restoredURL.path)")
+            } else {
+                // フォルダ選択ダイアログが必要
+                needsFolderSelection = true
+                logger.info("フォルダ選択ダイアログが必要です")
+            }
+        }
+        
+        // フォルダ選択ダイアログを表示（必要な場合）
+        if needsFolderSelection {
+            logger.info("フォルダ選択ダイアログを表示")
+            guard let selectedURL = folderAccessManager.selectAndBookmarkFolder() else {
+                logger.error("フォルダ選択がキャンセルされました")
+                throw RecordingError.saveFailed
+            }
+            actualOutputDirectory = selectedURL
+            isAccessingSecurityScope = true
+            logger.info("フォルダ選択完了: \(selectedURL.path)")
+        }
+        
+        // 親ディレクトリの存在確認
+        let actualParentDir = actualOutputDirectory.deletingLastPathComponent()
+        var isDirectory: ObjCBool = false
+        if !fileManager.fileExists(atPath: actualParentDir.path, isDirectory: &isDirectory) {
+            if isAccessingSecurityScope {
+                actualOutputDirectory.stopAccessingSecurityScopedResource()
+            }
+            logger.error("親ディレクトリが存在しません: \(actualParentDir.path)")
+            throw RecordingError.saveFailed
+        }
+        
+        if !isDirectory.boolValue {
+            if isAccessingSecurityScope {
+                actualOutputDirectory.stopAccessingSecurityScopedResource()
+            }
+            logger.error("親ディレクトリパスがファイルを指しています: \(actualParentDir.path)")
+            throw RecordingError.saveFailed
+        }
+        
+        logger.info("保存先ディレクトリ検証成功")
+        
         // セグメントが空の場合のチェック
         guard !segments.isEmpty else {
+            // セキュリティスコープアクセス終了
+            if isAccessingSecurityScope {
+                actualOutputDirectory.stopAccessingSecurityScopedResource()
+            }
             logger.error("セグメントが空です。録音データがありません")
             throw RecordingError.noData
         }
         
         // 1. 出力ディレクトリ作成
         do {
-            try fileManager.createDirectory(at: settings.outputDirectory, 
+            try fileManager.createDirectory(at: actualOutputDirectory, 
                                           withIntermediateDirectories: true)
-            logger.info("出力ディレクトリ作成成功: \(settings.outputDirectory.path)")
+            logger.info("出力ディレクトリ作成成功: \(actualOutputDirectory.path)")
         } catch {
+            // セキュリティスコープアクセス終了
+            if isAccessingSecurityScope {
+                actualOutputDirectory.stopAccessingSecurityScopedResource()
+            }
             logger.error("出力ディレクトリ作成失敗: \(error)")
+            logger.error("エラー詳細: \(error.localizedDescription)")
+            if let nsError = error as NSError? {
+                logger.error("エラーコード: \(nsError.code), ドメイン: \(nsError.domain)")
+                if nsError.code == 513 || nsError.code == 257 {
+                    logger.error("権限エラー: macOSサンドボックス設定を確認してください")
+                }
+            }
             throw RecordingError.saveFailed
         }
         
-        // 2. セグメントデータを結合
-        var combinedData = Data()
-        for (index, segment) in segments.enumerated() {
-            logger.debug("セグメント\(index + 1)/\(segments.count)を結合中: \(segment.data.count)バイト")
-            combinedData.append(segment.data)
+        // 2. セグメントからオーディオデータを抽出
+        logger.info("音声データ抽出開始: \(segments.count)セグメント")
+        
+        // 最初の数セグメントのデータヘッダーをログ出力（デバッグ用）
+        for (index, segment) in segments.prefix(3).enumerated() {
+            let headerData = segment.data.prefix(16)
+            let headerHex = headerData.map { String(format: "%02X", $0) }.joined(separator: " ")
+            logger.info("セグメント\(index + 1)ヘッダー: \(headerHex)")
         }
-        logger.info("セグメント結合完了: 合計\(combinedData.count)バイト")
+        
+        // セグメントの形式を判定（最初のセグメントで判定）
+        var audioSegments: [AudioSegmentData] = []
+        var processingMode: ProcessingMode = .unknown
+        
+        if let firstSegment = segments.first {
+            let headerData = firstSegment.data.prefix(4)
+            
+            // ID3ヘッダー (49 44 33) チェック
+            if headerData.count >= 3 && headerData[0] == 0x49 && headerData[1] == 0x44 && headerData[2] == 0x33 {
+                processingMode = .id3Media
+                logger.info("ID3メディア形式を検出。ID3MediaParserを使用します")
+            }
+            // TSパケット同期バイト (47) チェック
+            else if headerData.count >= 1 && headerData[0] == 0x47 {
+                processingMode = .tsStream
+                logger.info("TSストリーム形式を検出。TSParserを使用します")
+            }
+            else {
+                processingMode = .id3Media // デフォルトでID3処理を試行
+                logger.warning("不明な形式です。ID3MediaParserで処理を試行します")
+            }
+        }
+        
+        // 選択された処理モードでセグメントを処理
+        switch processingMode {
+        case .id3Media:
+            for (index, segment) in segments.enumerated() {
+                do {
+                    let audioData = try id3Parser.extractAudioData(from: segment.data)
+                    audioSegments.append(audioData)
+                    logger.debug("セグメント\(index + 1): ID3メディア処理成功")
+                } catch {
+                    logger.warning("セグメント\(index + 1)のID3メディア処理失敗: \(error)")
+                    continue
+                }
+            }
+            
+        case .tsStream:
+            for (index, segment) in segments.enumerated() {
+                do {
+                    let audioFrames = try tsParser.extractAudioFrames(from: segment.data)
+                    // ADTSFrameからAudioSegmentDataに変換
+                    for frame in audioFrames {
+                        let segmentData = AudioSegmentData(
+                            data: frame.data,
+                            format: .adts,
+                            sampleRate: frame.sampleRate,
+                            channelCount: frame.channelCount
+                        )
+                        audioSegments.append(segmentData)
+                    }
+                    logger.debug("セグメント\(index + 1): TSストリーム処理成功、\(audioFrames.count)フレーム")
+                } catch {
+                    logger.warning("セグメント\(index + 1)のTSストリーム処理失敗: \(error)")
+                    continue
+                }
+            }
+            
+        case .unknown:
+            logger.error("セグメント処理モードが決定できませんでした")
+            throw RecordingError.audioProcessingFailed
+        }
+        
+        guard !audioSegments.isEmpty else {
+            logger.error("音声データの抽出に失敗しました")
+            // セキュリティスコープアクセス終了
+            if isAccessingSecurityScope {
+                actualOutputDirectory.stopAccessingSecurityScopedResource()
+            }
+            throw RecordingError.noData
+        }
+        
+        logger.info("音声データ抽出完了: \(audioSegments.count)セグメント")
+        
+        // サンプルレートとチャンネル数をログ出力
+        if let firstSegment = audioSegments.first {
+            logger.info("オーディオ形式: \(firstSegment.sampleRate)Hz, \(firstSegment.channelCount)ch, 形式: \(firstSegment.format)")
+        }
+        
+        // 推定ファイルサイズ（セグメント数 * 平均セグメントサイズ）
+        let estimatedSize = audioSegments.reduce(0) { $0 + $1.data.count }
+        logger.info("推定出力サイズ: \(estimatedSize)バイト")
         
         // 3. 容量チェック（予想サイズの1.2倍のマージンを確保）
-        let requiredSpace = Int64(combinedData.count) * 12 / 10
+        let requiredSpace = Int64(estimatedSize) * 12 / 10
         logger.debug("必要容量: \(requiredSpace)バイト")
         do {
-            try await checkAvailableSpace(at: settings.outputDirectory, required: requiredSpace)
+            try await checkAvailableSpace(at: actualOutputDirectory, required: requiredSpace)
             logger.info("容量チェック成功")
         } catch {
+            // セキュリティスコープアクセス終了
+            if isAccessingSecurityScope {
+                actualOutputDirectory.stopAccessingSecurityScopedResource()
+            }
             logger.error("容量チェック失敗: \(error)")
             throw error
         }
@@ -543,57 +765,76 @@ class RecordingManager: ObservableObject {
         let outputFile: URL
         do {
             outputFile = try await generateUniqueFilename(
-                settings: settings, 
+                actualOutputDirectory: actualOutputDirectory,
+                startTime: settings.startTime,
+                outputFormat: settings.outputFormat, 
                 program: program
             )
             logger.info("出力ファイル名生成完了: \(outputFile.lastPathComponent)")
             logger.debug("出力ファイルパス: \(outputFile.path)")
         } catch {
+            // セキュリティスコープアクセス終了
+            if isAccessingSecurityScope {
+                actualOutputDirectory.stopAccessingSecurityScopedResource()
+            }
             logger.error("ファイル名生成失敗: \(error)")
             throw error
         }
         
-        // 5. 一時ファイル書き込み
-        let tempFile = outputFile.appendingPathExtension("tmp")
-        logger.debug("一時ファイルパス: \(tempFile.path)")
+        // 5. MP3ファイル作成
+        logger.info("MP3ファイル作成開始")
         
         do {
-            try combinedData.write(to: tempFile)
-            logger.info("一時ファイル書き込み成功: \(tempFile.lastPathComponent)")
+            try await createMP3File(
+                from: audioSegments,
+                outputURL: outputFile,
+                program: program,
+                startTime: settings.startTime
+            )
+            logger.info("MP3ファイル作成成功")
             
             // ファイルサイズ確認
-            if let attributes = try? fileManager.attributesOfItem(atPath: tempFile.path),
+            if let attributes = try? fileManager.attributesOfItem(atPath: outputFile.path),
                let fileSize = attributes[.size] as? Int64 {
-                logger.info("書き込まれたファイルサイズ: \(fileSize)バイト")
+                logger.info("作成されたファイルサイズ: \(fileSize)バイト")
             }
         } catch {
-            logger.error("一時ファイル書き込み失敗: \(error)")
+            // セキュリティスコープアクセス終了
+            if isAccessingSecurityScope {
+                actualOutputDirectory.stopAccessingSecurityScopedResource()
+            }
+            logger.error("MP3ファイル作成失敗: \(error)")
             logger.error("エラー詳細: \(error.localizedDescription)")
             throw RecordingError.saveFailed
         }
         
-        // 6. メタデータ埋め込み（将来拡張用）
-        do {
-            try await embedMetadata(tempFile: tempFile, outputFile: outputFile, program: program)
-            logger.info("メタデータ埋め込み完了")
-        } catch {
-            logger.error("メタデータ埋め込み失敗: \(error)")
-            // 一時ファイル削除
-            try? fileManager.removeItem(at: tempFile)
-            throw RecordingError.saveFailed
-        }
-        
-        // 7. 最終ファイル確認
+        // 6. 最終確認とログ出力
         if fileManager.fileExists(atPath: outputFile.path) {
             logger.info("録音ファイル保存成功: \(outputFile.path)")
             if let attributes = try? fileManager.attributesOfItem(atPath: outputFile.path),
                let fileSize = attributes[.size] as? Int64 {
                 logger.info("最終ファイルサイズ: \(fileSize)バイト")
             }
+            
+            // 録音完了メッセージ
+            if let program = program {
+                logger.info("録音完了: \(program.title) (\(program.stationId)) -> \(outputFile.lastPathComponent)")
+                print("録音完了: \(program.title) (\(program.stationId)) -> \(outputFile.lastPathComponent)")
+            }
         } else {
+            // セキュリティスコープアクセス終了
+            if isAccessingSecurityScope {
+                actualOutputDirectory.stopAccessingSecurityScopedResource()
+            }
             logger.error("録音ファイルが見つかりません: \(outputFile.path)")
             throw RecordingError.saveFailed
         }
+        
+        // セキュリティスコープアクセス終了
+        if isAccessingSecurityScope {
+            actualOutputDirectory.stopAccessingSecurityScopedResource()
+        }
+        logger.info("セキュリティスコープアクセス終了")
     }
     
     /// 利用可能容量チェック
@@ -609,29 +850,31 @@ class RecordingManager: ObservableObject {
     }
     
     /// 重複回避ファイル名生成
-    private func generateUniqueFilename(settings: RecordingSettings, 
+    private func generateUniqueFilename(actualOutputDirectory: URL,
+                                      startTime: Date,
+                                      outputFormat: String,
                                       program: RadioProgram?) async throws -> URL {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
-        let dateString = dateFormatter.string(from: settings.startTime)
+        let dateString = dateFormatter.string(from: startTime)
         
-        let baseTitle = program?.title ?? settings.stationId
-        let sanitizedTitle = baseTitle.replacingOccurrences(of: "[/\\\\:*?\"<>|]", 
+        let baseTitle = program?.title ?? "Recording"
+        let sanitizedTitle = baseTitle.replacingOccurrences(of: "[/\\:*?\"<>|]", 
                                                           with: "_", 
                                                           options: .regularExpression)
         
         let baseFilename = "\(dateString)_\(sanitizedTitle)"
-        var finalURL = settings.outputDirectory
+        var finalURL = actualOutputDirectory
             .appendingPathComponent(baseFilename)
-            .appendingPathExtension(settings.outputFormat)
+            .appendingPathExtension(outputFormat)
         
         // 重複チェック・連番追加
         var counter = 1
         while fileManager.fileExists(atPath: finalURL.path) {
             let numberedFilename = "\(baseFilename)_(\(counter))"
-            finalURL = settings.outputDirectory
+            finalURL = actualOutputDirectory
                 .appendingPathComponent(numberedFilename)
-                .appendingPathExtension(settings.outputFormat)
+                .appendingPathExtension(outputFormat)
             counter += 1
             
             // 無限ループ防止
@@ -641,30 +884,6 @@ class RecordingManager: ObservableObject {
         }
         
         return finalURL
-    }
-    
-    /// メタデータ埋め込み（現在はファイル移動のみ、将来拡張用）
-    private func embedMetadata(tempFile: URL, outputFile: URL, program: RadioProgram?) async throws {
-        logger.info("メタデータ埋め込み開始")
-        logger.debug("一時ファイル: \(tempFile.path)")
-        logger.debug("出力ファイル: \(outputFile.path)")
-        
-        // 現在は単純なファイル移動
-        // 将来的にはID3タグやメタデータ埋め込みを実装予定
-        do {
-            try fileManager.moveItem(at: tempFile, to: outputFile)
-            logger.info("ファイル移動成功: \(tempFile.lastPathComponent) -> \(outputFile.lastPathComponent)")
-        } catch {
-            logger.error("ファイル移動失敗: \(error)")
-            logger.error("エラー詳細: \(error.localizedDescription)")
-            throw error
-        }
-        
-        // メタデータ情報をログ出力（デバッグ用）
-        if let program = program {
-            logger.info("録音完了: \(program.title) (\(program.stationId)) -> \(outputFile.lastPathComponent)")
-            print("録音完了: \(program.title) (\(program.stationId)) -> \(outputFile.lastPathComponent)")
-        }
     }
     
     /// 進捗更新
@@ -689,5 +908,80 @@ class RecordingManager: ObservableObject {
         
         activeRecordings[recordingId] = newProgress
         currentProgress = newProgress
+    }
+    
+    /// MP3ファイル作成（セグメント結合）
+    private func createMP3File(from segments: [AudioSegmentData], 
+                              outputURL: URL, 
+                              program: RadioProgram?,
+                              startTime: Date) async throws {
+        logger.info("MP3セグメント結合開始: \(segments.count)セグメント")
+        
+        var combinedData = Data()
+        
+        for (index, segment) in segments.enumerated() {
+            if index == 0 {
+                // 最初のセグメントはID3タグ付きでそのまま使用
+                combinedData.append(segment.data)
+                logger.debug("セグメント\(index + 1): ID3タグ付きで追加")
+            } else {
+                // 2番目以降はID3タグを除去してMP3データのみを結合
+                if segment.data.count >= 10 && 
+                   segment.data[0] == 0x49 && segment.data[1] == 0x44 && segment.data[2] == 0x33 {
+                    // ID3タグサイズを計算
+                    let tagSize = calculateSynchsafeInteger(from: segment.data, offset: 6)
+                    let audioStartOffset = 10 + Int(tagSize)
+                    
+                    if audioStartOffset < segment.data.count {
+                        let audioData = segment.data.subdata(in: audioStartOffset..<segment.data.count)
+                        combinedData.append(audioData)
+                        logger.debug("セグメント\(index + 1): ID3タグ除去後に追加")
+                    } else {
+                        logger.warning("セグメント\(index + 1): ID3タグサイズが異常です")
+                    }
+                } else {
+                    // ID3タグがない場合はそのまま結合
+                    combinedData.append(segment.data)
+                    logger.debug("セグメント\(index + 1): そのまま追加")
+                }
+            }
+            
+            if index % 100 == 0 {
+                logger.debug("MP3セグメント結合進捗: \(index)/\(segments.count)")
+            }
+        }
+        
+        guard !combinedData.isEmpty else {
+            logger.error("結合後のMP3データが空です")
+            throw RecordingError.noData
+        }
+        
+        // 結合されたMP3データをファイルに書き込み
+        try combinedData.write(to: outputURL)
+        logger.info("MP3ファイル書き込み完了: \(combinedData.count)バイト")
+        
+        // ファイル検証
+        let writtenData = try Data(contentsOf: outputURL)
+        logger.info("書き込み検証成功: \(writtenData.count)バイト")
+        
+        // MP3ヘッダー確認
+        if writtenData.count >= 4 {
+            let header = String(format: "0x%02X%02X%02X%02X", writtenData[0], writtenData[1], writtenData[2], writtenData[3])
+            logger.info("MP3ファイルヘッダー: \(header)")
+        }
+        
+        logger.info("MP3ファイル作成完了: \(outputURL.lastPathComponent)")
+    }
+    
+    /// Synchsafe integer（7bit符号化）の計算
+    private func calculateSynchsafeInteger(from data: Data, offset: Int) -> UInt32 {
+        guard offset + 3 < data.count else { return 0 }
+        
+        let byte1 = UInt32(data[offset]) & 0x7F
+        let byte2 = UInt32(data[offset + 1]) & 0x7F
+        let byte3 = UInt32(data[offset + 2]) & 0x7F
+        let byte4 = UInt32(data[offset + 3]) & 0x7F
+        
+        return (byte1 << 21) | (byte2 << 14) | (byte3 << 7) | byte4
     }
 }

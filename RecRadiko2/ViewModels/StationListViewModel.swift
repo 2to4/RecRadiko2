@@ -132,6 +132,16 @@ extension Notification.Name {
     static let recordingStarted = Notification.Name("recordingStarted")
     /// 録音完了通知
     static let recordingCompleted = Notification.Name("recordingCompleted")
+    
+    // メニューコマンド用通知
+    /// 新規録音コマンド
+    static let newRecording = Notification.Name("newRecording")
+    /// 放送局一覧表示コマンド
+    static let showStationList = Notification.Name("showStationList")
+    /// 番組表表示コマンド
+    static let showProgramSchedule = Notification.Name("showProgramSchedule")
+    /// 設定画面表示コマンド
+    static let showSettings = Notification.Name("showSettings")
 }
 
 // MARK: - Protocol Definition

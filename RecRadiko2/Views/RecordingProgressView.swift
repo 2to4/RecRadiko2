@@ -93,7 +93,7 @@ struct RecordingProgressView: View {
                 .foregroundColor(.appSecondaryText)
             
             Text("\(progress.downloadedSegments)/\(progress.totalSegments)")
-                .font(.appMonospacedLarge)
+                .font(.appTimerDisplay)
                 .foregroundColor(.appPrimaryText)
         }
     }
@@ -105,7 +105,7 @@ struct RecordingProgressView: View {
                 .foregroundColor(.appSecondaryText)
             
             Text("\(Int(progressValue * 100))%")
-                .font(.appMonospacedLarge)
+                .font(.appTimerDisplay)
                 .foregroundColor(.appPrimaryText)
         }
     }
